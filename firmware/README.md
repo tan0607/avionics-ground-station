@@ -6,7 +6,7 @@ PlatformIO project:
 | Target | Env | Where it lives | Job |
 |---|---|---|---|
 | **Bridge** | `bridge` | on the ground, USB to the laptop | forward the raw E32 byte stream to USB serial; LED on packet RX. Stays *thin* — no parsing. |
-| **Onboard TX** | `onboard_tx` | on the rocket | pack the shared 32-byte frame and transmit at 4 Hz. *(added in the onboard-TX commit)* |
+| **Onboard TX** | `onboard_tx` | on the rocket (ESP32-S3) | pack the shared 32-byte frame from your sensors and transmit at 4 Hz, air-rate 2.4k. |
 
 > **The wire format is the contract.** `shared/protocol/PROTOCOL.md` + `shared/protocol/packet.py`
 > are the source of truth. The firmware never redefines it — `lib/TelemPacket` is a
@@ -83,6 +83,59 @@ that is independent of the 9600 baud on the E32-side UART.
 Prefer the Arduino IDE? Copy `lib/E32/*` and (for onboard TX) `lib/TelemPacket/*` into a
 sketch folder alongside the relevant `src/*.cpp` renamed to `<folder>.ino`.
 
+## Onboard TX (Target 2)
+
+`src/onboard_tx.cpp` is the **radio + packet layer** of the flight computer. Every
+250 ms it calls `read_sensors()`, builds the frame, and writes it AUX-safely.
+
+- **The sensor seam.** `read_sensors(telem_body_t*)` is the one function you own — it
+  fills the body from your real baro / NEO-M8N GPS / IMU / vbat and flight state
+  machine. It ships with a working *demo* (pad-state, launch-site GPS fix) so the board
+  transmits on the bench immediately. **Keep the units exactly as `PROTOCOL.md`**
+  (dm/s, deg×1e7, V×10, tilt 0..180). Do not touch framing/CRC/TX below the seam.
+- **Sequence & loss.** The TX loop owns `seq` and increments it **only on a successful
+  write**, so the ground station's loss counter reflects RF loss, not onboard hiccups.
+- **Never blind-write.** If AUX isn't HIGH within 200 ms the frame is *dropped* (seq
+  held) rather than stalling the flight loop — the anti-lock-up rule, applied airborne.
+
+### Verify the packet layer byte-for-byte (no hardware)
+
+`lib/TelemPacket` is a byte-for-byte C mirror of `shared/protocol/packet.py`.
+`test/packet_check.cpp` rebuilds the reference frame `packet.py` generates and asserts
+every one of the 32 bytes matches (frame `aa5500…744e`, CRC `0x4e74`):
+
+```bash
+cc -std=c++11 -I firmware/lib/TelemPacket firmware/test/packet_check.cpp -o firmware/test/packet_check
+./firmware/test/packet_check         # -> PASS: firmware frame is byte-for-byte identical to packet.py
+```
+
+Run this whenever `packet.py` / `PROTOCOL.md` changes — it's the guardrail that keeps
+firmware and ground station on the same wire format.
+
+## ⚠️ RFI risk: does the E32 TX knock out the GPS fix? (§8)
+
+A 433 MHz transmitter sitting centimetres from a NEO-M8N can desense the GPS front-end
+(the RocketTalk 1 W build had to add shielding + ferrite beads over exactly this). This
+is a **must-test-before-flight** item (`GROUND_STATION_PLAN.md §8`). Planned bench test:
+
+1. **Baseline** — power the flight computer with the **E32 TX disabled** (comment out
+   the `radio.writeFrame(...)` call, or hold the E32 in POWERSAVE). Let the NEO-M8N get
+   a 3D fix outdoors/by a window. Log for ~5 min: `gps_fix`, `gps_sats`, and (from
+   u-center if available) C/N0. This is the "radio quiet" reference.
+2. **Radiating** — re-enable the 4 Hz downlink into a **real 433 MHz antenna** (never
+   TX into no load) at the intended flight power. Log the same fields for ~5 min.
+3. **Compare** — did `gps_fix` drop from 3 → 2/0? Did `gps_sats` or mean C/N0 fall
+   sharply the moment TX starts? A clear correlation = RFI desense.
+4. **Duty-cycle sweep** (if step 3 is marginal) — try 1 Hz / 2 Hz / 4 Hz to see whether
+   the fix survives at a lower TX duty cycle.
+5. **Mitigations if it fails** — maximise E32↔GPS-antenna separation, add ground-plane
+   shielding + a ferrite bead on the E32 supply, move the GPS antenna away from the E32
+   and its feedline, and/or reduce TX power or rate. Re-run steps 1–3 after each change.
+
+The demo `read_sensors()` reports `gps_fix`/`gps_sats` in the live downlink, so this
+test can be watched **on the dashboard's link panel in real time** — flip the radio on
+and see whether the fix indicator drops.
+
 ## Layout
 
 ```
@@ -90,8 +143,10 @@ firmware/
 ├── platformio.ini         two build envs (bridge, onboard_tx)
 ├── lib/
 │   ├── E32/               AUX-disciplined E32 driver (shared)
-│   └── TelemPacket/       C mirror of PROTOCOL.md + host CRC test (onboard TX)
+│   └── TelemPacket/       C mirror of PROTOCOL.md (header-only)
+├── test/
+│   └── packet_check.cpp   host proof: C frame == packet.py frame
 └── src/
     ├── bridge.cpp         Target 1: raw passthrough + RX LED
-    └── onboard_tx.cpp     Target 2: 4 Hz telemetry TX
+    └── onboard_tx.cpp     Target 2: 4 Hz telemetry TX + sensor seam
 ```
