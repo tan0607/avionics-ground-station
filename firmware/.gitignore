@@ -1,0 +1,8 @@
+# PlatformIO build output + local caches
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# host-side packet verification binary (see lib/TelemPacket/)
+test/packet_check
+*.o
