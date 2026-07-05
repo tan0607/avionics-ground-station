@@ -1,0 +1,22 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / frontend
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+
+# Claude Code machine-local settings (has absolute hook paths)
+.claude/settings.local.json
+
+# Offline map tiles (large, regenerable via go-pmtiles)
+*.pmtiles
+
+# OS
+.DS_Store
+
+# Flight data — uncomment if you don't want raw logs/CSVs in git.
+# Raw logs can get large; consider archiving flights/ separately.
+# flights/
