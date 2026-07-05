@@ -1,0 +1,165 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * Rocket ground-station console theme.
+ * Palette committed in DESIGN.md §Colors — near-black blue-tinted field,
+ * cool near-white ink, four semantic hues (nominal/caution/alarm/data) that
+ * are the ONLY saturated colors. Single always-dark theme; no light mode.
+ * shadcn/ui variable names are mapped onto these tokens so any shadcn
+ * primitive inherits the console look instead of the default aesthetic.
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  color-scheme: dark;
+
+  /* --- surfaces: blue-tinted near-black ramp --- */
+  --bg: oklch(0.17 0.012 250);
+  --surface: oklch(0.205 0.014 250);
+  --surface-2: oklch(0.245 0.016 248);
+  --border: oklch(0.30 0.018 245);
+  --border-strong: oklch(0.37 0.022 243);
+
+  /* --- ink: cool near-white ramp --- */
+  --ink: oklch(0.94 0.008 240);
+  --ink-dim: oklch(0.74 0.018 245);
+  --ink-mute: oklch(0.62 0.02 245);
+
+  /* --- semantic: the only saturated colors, one meaning each --- */
+  --nominal: oklch(0.78 0.16 158);
+  --caution: oklch(0.8 0.13 85);
+  --alarm: oklch(0.64 0.21 25);
+  --data: oklch(0.77 0.11 205);
+
+  /* low-alpha fills (status rows, alarm bar) — same hues, no new colors */
+  --nominal-bg: oklch(0.78 0.16 158 / 0.13);
+  --caution-bg: oklch(0.8 0.13 85 / 0.14);
+  --alarm-bg: oklch(0.64 0.21 25 / 0.16);
+  --data-bg: oklch(0.77 0.11 205 / 0.12);
+
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, monospace;
+
+  /* console is near-sharp: 2px, not the rounded shadcn default */
+  --radius: 0.125rem;
+
+  /* --- shadcn/ui contract → console tokens --- */
+  --background: var(--bg);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  --primary: var(--data);
+  --primary-foreground: oklch(0.17 0.012 250);
+  --secondary: var(--surface-2);
+  --secondary-foreground: var(--ink);
+  --muted: var(--surface-2);
+  --muted-foreground: var(--ink-dim);
+  --accent: var(--surface-2);
+  --accent-foreground: var(--ink);
+  --destructive: var(--alarm);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border-color: var(--border);
+  --input: var(--border-strong);
+  --ring: var(--data);
+  --chart-1: var(--data);
+  --chart-2: var(--nominal);
+  --chart-3: var(--caution);
+  --chart-4: var(--alarm);
+  --chart-5: var(--ink-dim);
+}
+
+/* Expose tokens to Tailwind utilities (bg-*, text-*, border-*, font-mono …) */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border-color);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* console semantic + surface tokens as first-class utilities */
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-hairline: var(--border);
+  --color-hairline-strong: var(--border-strong);
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-ink-mute: var(--ink-mute);
+  --color-nominal: var(--nominal);
+  --color-caution: var(--caution);
+  --color-alarm: var(--alarm);
+  --color-data: var(--data);
+  --color-nominal-bg: var(--nominal-bg);
+  --color-caution-bg: var(--caution-bg);
+  --color-alarm-bg: var(--alarm-bg);
+  --color-data-bg: var(--data-bg);
+
+  --font-sans: var(--font-mono);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: calc(var(--radius) - 1px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+}
+
+@layer base {
+  * {
+    border-color: var(--border-color);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* dim vignette so the panel reads as an instrument, not a flat fill */
+    background-image: radial-gradient(
+      120% 120% at 50% 0%,
+      oklch(0.2 0.014 250) 0%,
+      var(--bg) 60%
+    );
+    background-attachment: fixed;
+  }
+
+  /* tabular figures everywhere numbers stream, so digits don't jitter at 4 Hz */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
