@@ -55,8 +55,8 @@ Everything else (HANDOFF.md, the prompts, PROTOCOL.md, packet.py, all built code
 
 ```
 shared/protocol/packet.py     32-byte codec + CRC + stream parser   ← CONTRACT (source of truth)
-shared/protocol/PROTOCOL.md   human spec of the wire format         ← pending
-shared/fake_telemetry.py      full-flight simulator                 ← pending
+shared/protocol/PROTOCOL.md   human spec of the wire format         ← ✅ done
+shared/fake_telemetry.py      full-flight simulator                 ← ✅ done
 backend/                      FastAPI serial→CSV→WebSocket           ← Window 1
 dashboard/                    Vite/React/TS + uPlot + shadcn         ← Window 2 (+ map from W3)
 notebooks/                    PLDR Jupyter template                  ← Window 4
@@ -68,8 +68,8 @@ flights/                      runtime session data (raw.log, csv)
 
 - ✅ Setup done (§1). `git log`: `docs` → `.gitignore` → `shared codec + handoff`.
 - ✅ **`shared/protocol/packet.py`** written and **passes its self-test** (`python3 shared/protocol/packet.py`). It is the authoritative 32-byte packet codec (encode/decode/CRC + a `PacketParser` stream framer + `Telemetry` dataclass + `CSV_COLUMNS`).
-- ⏳ **Pending contract pieces** (assigned to the "Contract window" below): `shared/protocol/PROTOCOL.md` and `shared/fake_telemetry.py`.
-- ⏳ Everything else pending per the window map (§6).
+- ✅ **Contract complete**: `shared/protocol/PROTOCOL.md` + `shared/fake_telemetry.py` written and verified — self-test passes, a full simulated flight (pad→landed, ~1390 m apogee) round-trips through the codec, and loss stats work.
+- ⏳ Everything else pending per the window map (§6). **Next up: Frontend + Firmware can start in parallel, then Backend, then Map + PLDR.**
 
 ## 5. The packet (summary — `packet.py` is the source of truth)
 
@@ -103,7 +103,7 @@ Open each in a **fresh Claude Code window in this project folder**, paste the pr
 
 ---
 
-### Contract window (do this one first)
+### Contract window — ✅ DONE (PROTOCOL.md + fake_telemetry.py built & verified; prompt kept for reference)
 ```
 You're finishing the SHARED CONTRACT for this rocket ground station. Read HANDOFF.md and GROUND_STATION_PLAN.md §3.
 shared/protocol/packet.py ALREADY EXISTS and passes its self-test (run: python3 shared/protocol/packet.py) — it is the source
