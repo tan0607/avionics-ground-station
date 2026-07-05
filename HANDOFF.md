@@ -22,6 +22,28 @@
 | Design skills | `impeccable` + `avoid-ai-design` installed **globally** in `~/.claude/skills/` |
 | impeccable hook | project `.claude/settings.local.json` runs impeccable's detector after Edit/Write on UI files |
 
+## 1b. New computer? Run this setup ONCE before pasting any window prompt
+
+`git pull` brings the code + docs, but **NOT** the toolchain or the design skills (those live
+outside the repo). On a fresh machine, do this once:
+
+```bash
+# 1. Node 20+ (needed for the frontend + impeccable). On macOS:
+brew install node
+
+# 2. Design skills — global, not in the repo:
+git clone https://github.com/funboy322/avoid-ai-design.git ~/.claude/skills/avoid-ai-design
+npx impeccable install     # pick claude; also re-creates the impeccable edit hook for this machine
+
+# 3. Per-window deps, when you reach that window:
+#    backend/   -> python3 -m venv .venv && pip install fastapi uvicorn pyserial
+#    dashboard/ -> npm install
+#    notebooks/ -> pip install pandas matplotlib jupyter
+```
+
+Until step 2 is done, the frontend window's `impeccable` / `avoid-ai-design` skills won't exist.
+Everything else (HANDOFF.md, the prompts, PROTOCOL.md, packet.py, all built code) travels with git.
+
 ## 2. Design-skill policy (frontend windows)
 
 - Use **`impeccable`** in **product register** (`audit` / `polish` / `quieter`; go easy on `bolder`) to generate/refine UI.
