@@ -9,7 +9,7 @@ import uPlot from "uplot"
 import { UPlotChart } from "./UPlotChart"
 import type { ChartSeries } from "@/hooks/useTelemetry"
 
-const MONO = '"JetBrains Mono", ui-monospace, monospace'
+const MONO = '"Geist Mono Variable", ui-monospace, monospace'
 
 /** Read a themed color from :root; fall back to a literal if unset (SSR/tests). */
 function themeColor(name: string, fallback: string): string {
@@ -25,10 +25,10 @@ export function AltitudeChart({ chart }: { chart: ChartSeries }) {
   apogeeRef.current = chart.apogee
 
   const makeOptions = useMemo(() => {
-    const dataStroke = themeColor("--data", "#5cc8ff")
-    const dataFill = themeColor("--data-bg", "rgba(92,200,255,0.08)")
-    const axisInk = themeColor("--ink-mute", "#5a6472")
-    const grid = themeColor("--border", "#222a35")
+    const dataStroke = themeColor("--data", "#f2f2f2")
+    const dataFill = themeColor("--data-bg", "rgba(242,242,242,0.05)")
+    const axisInk = themeColor("--ink-mute", "#9a9a9a")
+    const grid = themeColor("--border", "#333333")
     const apogeeInk = themeColor("--caution", "#f4b740")
 
     const axisFont = `${Math.round(10.5 * uPlot.pxRatio)}px ${MONO}`
@@ -82,6 +82,8 @@ export function AltitudeChart({ chart }: { chart: ChartSeries }) {
           stroke: dataStroke,
           width: 1.5 * uPlot.pxRatio,
           fill: dataFill,
+          // smooth the flight arc; falls back to linear if the build lacks spline
+          paths: uPlot.paths.spline?.(),
           points: { show: false },
           value: (_u, v) => (v == null ? "--" : `${Math.round(v)} m`),
         },

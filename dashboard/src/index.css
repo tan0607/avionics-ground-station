@@ -15,32 +15,37 @@
 :root {
   color-scheme: dark;
 
-  /* --- surfaces: blue-tinted near-black ramp --- */
-  --bg: oklch(0.17 0.012 250);
-  --surface: oklch(0.205 0.014 250);
-  --surface-2: oklch(0.245 0.016 248);
-  --border: oklch(0.30 0.018 245);
-  --border-strong: oklch(0.37 0.022 243);
+  /* --- surfaces: PURE-BLACK monochrome ramp (chroma 0, no tint) ---
+   * Base is true #000; the card surface is a clear notch of neutral grey above
+   * it. Monochrome-terminal direction — no accent hue anywhere in the chrome. */
+  --bg: oklch(0 0 0);
+  --surface: oklch(0.095 0 0);
+  --surface-2: oklch(0.15 0 0);
+  --border: oklch(0.27 0 0);
+  --border-strong: oklch(0.36 0 0);
 
-  /* --- ink: cool near-white ramp --- */
-  --ink: oklch(0.94 0.008 240);
-  --ink-dim: oklch(0.74 0.018 245);
-  --ink-mute: oklch(0.62 0.02 245);
+  /* --- ink: neutral near-white ramp --- */
+  --ink: oklch(0.96 0 0);
+  --ink-dim: oklch(0.72 0 0);
+  --ink-mute: oklch(0.61 0 0);
 
-  /* --- semantic: the only saturated colors, one meaning each --- */
+  /* --- semantic: the ONLY saturated colors, reserved for status --- */
   --nominal: oklch(0.78 0.16 158);
   --caution: oklch(0.8 0.13 85);
   --alarm: oklch(0.64 0.21 25);
-  --data: oklch(0.77 0.11 205);
+  /* live data carries NO hue — it is bright neutral white (no cyan) */
+  --data: oklch(0.96 0 0);
 
-  /* low-alpha fills (status rows, alarm bar) — same hues, no new colors */
+  /* low-alpha fills (status rows, alarm bar); data fill is a faint grey wash */
   --nominal-bg: oklch(0.78 0.16 158 / 0.13);
   --caution-bg: oklch(0.8 0.13 85 / 0.14);
   --alarm-bg: oklch(0.64 0.21 25 / 0.16);
-  --data-bg: oklch(0.77 0.11 205 / 0.12);
+  --data-bg: oklch(0.96 0 0 / 0.05);
 
-  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular,
-    Menlo, Consolas, monospace;
+  /* Geist (shadcn family): sans carries chrome/labels, mono carries data. */
+  --font-sans: "Geist Variable", system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
 
   /* console is near-sharp: 2px, not the rounded shadcn default */
   --radius: 0.125rem;
@@ -111,7 +116,7 @@
   --color-alarm-bg: var(--alarm-bg);
   --color-data-bg: var(--data-bg);
 
-  --font-sans: var(--font-mono);
+  --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
 
   --radius-sm: calc(var(--radius) - 1px);
@@ -134,24 +139,27 @@
     margin: 0;
     background: var(--background);
     color: var(--foreground);
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    /* dim vignette so the panel reads as an instrument, not a flat fill */
-    background-image: radial-gradient(
-      120% 120% at 50% 0%,
-      oklch(0.2 0.014 250) 0%,
-      var(--bg) 60%
-    );
-    background-attachment: fixed;
+    /* pure black, no vignette — monochrome terminal (user direction) */
   }
 
-  /* tabular figures everywhere numbers stream, so digits don't jitter at 4 Hz */
+  /* streaming numbers: Geist Mono + tabular figures so digits don't jitter at 4 Hz */
   .tnum {
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" 1;
   }
+}
+
+/* uPlot's hover crosshair defaults to a blue-grey (#607D8B); force it neutral
+ * so no non-semantic hue survives in the monochrome console. */
+.u-cursor-x {
+  border-right-color: var(--border-strong);
+}
+.u-cursor-y {
+  border-bottom-color: var(--border-strong);
 }
 
 @media (prefers-reduced-motion: reduce) {

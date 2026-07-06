@@ -1,44 +1,88 @@
 /**
- * App — the single-screen ground-station console (DESIGN_SPECS §3).
- * Top status strip, then a two-pane instrument row: the streaming altitude
- * chart takes the space, a fixed instrument column carries the hero numbers
- * and go/no-go. One viewport, no scroll, 1px dividers, no floating cards.
+ * App — the single-screen ground-station console (monochrome terminal).
+ * Left view rail · top mission bar · KPI instrument strip · main split:
+ * a stacked sensor-chart column (altitude, then vertical-speed + tilt) on the
+ * left, GO/NO-GO + flight-state timeline on the right. Pure black, 1px hairline
+ * panels, white data / semantic status only. One viewport, no scroll.
+ * The whole data layer (useTelemetry off the mock) is unchanged; the secondary
+ * channels come from useSensorSeries, which piggybacks on it without touching it.
  */
+import type { ReactNode } from "react"
+import { cn } from "@/lib/utils"
 import { useTelemetry } from "@/hooks/useTelemetry"
-import { StatusBar } from "@/components/StatusBar"
+import { useSensorSeries } from "@/hooks/useSensorSeries"
+import { Card } from "@/components/ui/card"
+import { SideNav } from "@/components/SideNav"
+import { TopBar } from "@/components/TopBar"
+import { KpiRow } from "@/components/KpiRow"
 import { AltitudeChart } from "@/components/AltitudeChart"
-import { Readouts } from "@/components/Readouts"
+import { SensorChart } from "@/components/SensorChart"
+import { GoNoGo } from "@/components/GoNoGo"
+import { FlightTimeline } from "@/components/FlightTimeline"
+
+function ChartCard({
+  title,
+  right,
+  className,
+  children,
+}: {
+  title: string
+  right?: ReactNode
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <Card className={cn("min-h-0 min-w-0 overflow-hidden", className)}>
+      <div className="flex items-baseline justify-between border-b border-hairline px-4 py-1.5">
+        <span className="text-[0.6875rem] uppercase tracking-[0.14em] text-ink-mute">{title}</span>
+        {right && <span className="text-[0.625rem] tabular-nums text-ink-mute">{right}</span>}
+      </div>
+      <div className="min-h-0 flex-1 p-2">{children}</div>
+    </Card>
+  )
+}
 
 function App() {
   const telemetry = useTelemetry()
+  const sensors = useSensorSeries(telemetry)
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <h1 className="sr-only">Rocket ground station — live telemetry</h1>
-      <StatusBar state={telemetry} />
+      <SideNav />
 
-      <main className="flex min-h-0 flex-1">
-        {/* chart pane */}
-        <section className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-baseline justify-between border-b border-hairline px-4 py-2">
-            <span className="text-[0.6875rem] uppercase tracking-[0.14em] text-ink-mute">
-              Altitude · m AGL
-            </span>
-            <span className="text-[0.6875rem] tabular-nums text-ink-mute">
-              {telemetry.frame ? `${telemetry.chart.xs.length} pts` : "awaiting link"}
-            </span>
-          </div>
-          <div className="min-h-0 flex-1 p-2">
-            <AltitudeChart chart={telemetry.chart} />
-          </div>
-        </section>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar state={telemetry} />
+        <KpiRow frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
 
-        {/* instrument column — panel chrome (surface) against the chart's darker
-            scope area (bg), so the two read as distinct instrument surfaces */}
-        <aside className="w-64 shrink-0 border-l border-hairline bg-surface">
-          <Readouts frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
-        </aside>
-      </main>
+        <main className="grid min-h-0 flex-1 grid-cols-[1fr_17rem] gap-2 p-2">
+          {/* sensor-chart column */}
+          <div className="flex min-h-0 min-w-0 flex-col gap-2">
+            <ChartCard
+              title="Altitude · m AGL"
+              right={telemetry.frame ? `${telemetry.chart.xs.length} pts` : "awaiting link"}
+              className="flex-[1.7]"
+            >
+              <AltitudeChart chart={telemetry.chart} />
+            </ChartCard>
+
+            <div className="grid min-h-0 flex-1 grid-cols-2 gap-2">
+              <ChartCard title="Vertical Speed · m/s">
+                <SensorChart xs={sensors.xs} ys={sensors.vspeed} rev={sensors.rev} unit="" signed />
+              </ChartCard>
+              <ChartCard title="Tilt · deg">
+                <SensorChart xs={sensors.xs} ys={sensors.tilt} rev={sensors.rev} unit="°" yDomain={[0, 180]} />
+              </ChartCard>
+            </div>
+          </div>
+
+          {/* safety + phase */}
+          <div className="flex min-h-0 flex-col gap-2">
+            <GoNoGo frame={telemetry.frame} />
+            <FlightTimeline state={telemetry.frame?.flightState ?? null} />
+          </div>
+        </main>
+      </div>
     </div>
   )
 }
