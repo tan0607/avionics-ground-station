@@ -17,6 +17,6 @@ dashboard/dist/
 # OS
 .DS_Store
 
-# Flight data — uncomment if you don't want raw logs/CSVs in git.
-# Raw logs can get large; consider archiving flights/ separately.
-# flights/
+# Flight data — runtime session logs (raw.log/CSVs), regenerable, can get large.
+# Archive flights/ separately rather than committing per-run data.
+flights/
