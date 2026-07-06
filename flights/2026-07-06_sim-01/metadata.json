@@ -1,0 +1,34 @@
+{
+  "session": "2026-07-06_sim-01",
+  "simulated": true,
+  "generated_by": "notebooks/make_fake_flight.py",
+  "generated_utc": "2026-07-06T10:30:54+00:00",
+  "date": "2026-07-06",
+  "packet_version": {
+    "packet_size": 32,
+    "body_size": 28,
+    "struct": "<BHBIhhiihBBBBBB"
+  },
+  "air_rate_bps": 2400,
+  "downlink_hz": 4,
+  "sd_hz": 4,
+  "loss": {
+    "base_prob": 0.04,
+    "seed": 42,
+    "phase_multipliers": {
+      "PAD": 0.2,
+      "BOOST": 1.0,
+      "COAST": 1.0,
+      "APOGEE": 1.2,
+      "DROGUE": 3.0,
+      "MAIN": 1.5,
+      "LANDED": 2.0
+    }
+  },
+  "counts": {
+    "packets_total": 450,
+    "packets_received": 417,
+    "overall_loss_pct": 7.33
+  },
+  "notes": "Fake flight for PLDR template testing. SD log is complete; telemetry.csv/raw.log carry phase-weighted downlink loss."
+}
