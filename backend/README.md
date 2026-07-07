@@ -19,6 +19,9 @@ backend/.venv/bin/pip install fastapi "uvicorn[standard]" pyserial
 # dev — spawn the flight simulator as the byte source (no hardware)
 backend/.venv/bin/python -m backend.app --fake
 
+# dev — replay the flight forever so the dashboard always has live data
+backend/.venv/bin/python -m backend.app --fake --loop
+
 # dev — inject packet loss to exercise the loss stats
 backend/.venv/bin/python -m backend.app --fake --loss 0.05
 

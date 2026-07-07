@@ -185,7 +185,7 @@ def build_source(args: argparse.Namespace) -> ByteSource:
         extra += ["--loss", str(args.loss)]
     if args.fast:
         extra += ["--fast"]
-    return FakeSource(extra)
+    return FakeSource(extra, loop=args.loop)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -200,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="(--fake only) inject packet loss fraction to test loss stats")
     ap.add_argument("--fast", action="store_true",
                     help="(--fake only) run the sim with no realtime pacing")
+    ap.add_argument("--loop", action="store_true",
+                    help="(--fake only) replay the flight continuously for UI/demo work")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     args = ap.parse_args(argv)

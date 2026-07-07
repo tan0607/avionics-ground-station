@@ -30,9 +30,10 @@ class FakeSource:
     human event markers to stderr; we forward stdout bytes and surface stderr lines.
     """
 
-    def __init__(self, extra_args: list[str] | None = None) -> None:
+    def __init__(self, extra_args: list[str] | None = None, loop: bool = False) -> None:
         self._proc: asyncio.subprocess.Process | None = None
         self._extra = extra_args or []
+        self._loop = loop  # replay the flight forever (UI/demo) instead of once
 
     async def _spawn(self) -> asyncio.subprocess.Process:
         # Run from repo root so `-m shared.fake_telemetry` resolves; same interpreter.
@@ -44,19 +45,26 @@ class FakeSource:
         )
 
     async def chunks(self) -> AsyncIterator[bytes]:
-        self._proc = await self._spawn()
-        assert self._proc.stdout is not None
-        # Drain stderr event markers in the background so the pipe never blocks.
-        asyncio.create_task(self._drain_stderr())
         while True:
-            chunk = await self._proc.stdout.read(4096)
-            if not chunk:
-                break  # simulator finished (flight landed) or pipe closed
-            yield chunk
+            self._proc = await self._spawn()
+            assert self._proc.stdout is not None
+            # Drain stderr event markers in the background so the pipe never blocks.
+            asyncio.create_task(self._drain_stderr(self._proc))
+            while True:
+                chunk = await self._proc.stdout.read(4096)
+                if not chunk:
+                    break  # simulator finished (flight landed) or pipe closed
+                yield chunk
+            await self._proc.wait()
+            if not self._loop:
+                break
+            # seq restarts at 1 -> LossTracker's RESET_GAP re-baselines (no fake loss).
+            print("[fake_telemetry] flight ended — replaying (--loop)", file=sys.stderr)
 
-    async def _drain_stderr(self) -> None:
-        assert self._proc is not None and self._proc.stderr is not None
-        async for line in self._proc.stderr:
+    async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
+        if proc.stderr is None:
+            return
+        async for line in proc.stderr:
             text = line.decode(errors="replace").rstrip()
             if text:
                 print(f"[fake_telemetry] {text}", file=sys.stderr)
@@ -70,7 +78,8 @@ class FakeSource:
                 self._proc.kill()
 
     def describe(self) -> dict:
-        return {"kind": "fake", "cmd": f"python -m shared.fake_telemetry {' '.join(self._extra)}".strip()}
+        return {"kind": "fake", "loop": self._loop,
+                "cmd": f"python -m shared.fake_telemetry {' '.join(self._extra)}".strip()}
 
 
 class SerialSource:
