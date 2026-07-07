@@ -1,0 +1,74 @@
+/*
+ * FlightMap — Leaflet chrome retinted to the ground-station console.
+ * Scoped to .flightmap so the overrides travel with the component and never
+ * leak into the rest of the app. Tokens mirror index.css (§DESIGN colors):
+ * pure-black field, hairline borders, neutral ink, mono data.
+ */
+
+.flightmap .leaflet-container {
+  background: #0a0a0a; /* console surface — no white flash before tiles paint */
+  font-family: var(--font-sans);
+  outline: none;
+}
+
+/* zoom control → flat dark buttons, 1px hairline, no rounded candy */
+.flightmap .leaflet-control-zoom {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+
+.flightmap .leaflet-control-zoom a {
+  background: var(--surface);
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--border);
+  width: 26px;
+  height: 26px;
+  line-height: 26px;
+}
+
+.flightmap .leaflet-control-zoom a:last-child {
+  border-bottom: none;
+}
+
+.flightmap .leaflet-control-zoom a:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* attribution (OSM/Protomaps credit — required, keep it, just quiet it) */
+.flightmap .leaflet-control-attribution {
+  background: var(--surface);
+  color: var(--ink-mute);
+  font-family: var(--font-sans);
+  font-size: 10px;
+}
+
+.flightmap .leaflet-control-attribution a {
+  color: var(--ink-dim);
+}
+
+/* ground-station marker — a still crosshair, dual-coded by SHAPE not color */
+.flightmap .gs-marker {
+  color: var(--ink-dim);
+}
+
+.flightmap .gs-marker svg {
+  display: block;
+}
+
+/* marker labels (GS tag) — quiet mono chip, no bubble arrow */
+.flightmap .leaflet-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink-mute);
+  box-shadow: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 0 5px;
+}
+
+.flightmap .leaflet-tooltip::before {
+  display: none;
+}

@@ -1,27 +1,35 @@
 /**
- * SideNav — the thin left view rail. Live is the only active view in this
- * milestone; Map / Log / Settings are disabled placeholders for later
- * milestones (the map comes from Window 3). Icons are functional lucide marks,
- * label + glyph, no decoration.
+ * SideNav — the thin left view rail. Live and Map are the active views; Log /
+ * Settings stay disabled placeholders for later milestones. The rail is
+ * controlled: the parent owns the selected view and passes it down. Icons are
+ * functional lucide marks, label + glyph, no decoration.
  */
 import { Activity, Map, ScrollText, Settings, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
+/** The dashboard's top-level views. */
+export type ViewId = "live" | "map"
+
 interface NavItem {
+  id: ViewId | null // null = not yet wired (disabled placeholder)
   label: string
   icon: LucideIcon
-  active?: boolean
   disabled?: boolean
 }
 
 const ITEMS: NavItem[] = [
-  { label: "Live", icon: Activity, active: true },
-  { label: "Map", icon: Map, disabled: true },
-  { label: "Log", icon: ScrollText, disabled: true },
-  { label: "Set", icon: Settings, disabled: true },
+  { id: "live", label: "Live", icon: Activity },
+  { id: "map", label: "Map", icon: Map },
+  { id: null, label: "Log", icon: ScrollText, disabled: true },
+  { id: null, label: "Set", icon: Settings, disabled: true },
 ]
 
-export function SideNav() {
+interface SideNavProps {
+  active: ViewId
+  onSelect: (view: ViewId) => void
+}
+
+export function SideNav({ active, onSelect }: SideNavProps) {
   return (
     <nav
       aria-label="Views"
@@ -45,16 +53,18 @@ export function SideNav() {
       <ul className="flex flex-col">
         {ITEMS.map((item) => {
           const Icon = item.icon
+          const isActive = item.id != null && item.id === active
           return (
             <li key={item.label}>
               <button
                 type="button"
                 disabled={item.disabled}
-                aria-current={item.active ? "page" : undefined}
+                aria-current={isActive ? "page" : undefined}
                 title={item.disabled ? `${item.label} — later milestone` : item.label}
+                onClick={item.id ? () => onSelect(item.id as ViewId) : undefined}
                 className={cn(
                   "flex w-full flex-col items-center gap-1 py-3 transition-colors",
-                  item.active
+                  isActive
                     ? "bg-surface-2 text-ink"
                     : item.disabled
                       ? "cursor-not-allowed text-ink-mute/50"
@@ -64,7 +74,7 @@ export function SideNav() {
                 <Icon
                   aria-hidden
                   strokeWidth={1.75}
-                  className={cn("size-[18px]", item.active && "text-data")}
+                  className={cn("size-[18px]", isActive && "text-data")}
                 />
                 <span className="text-[0.5625rem] uppercase tracking-wide">{item.label}</span>
               </button>

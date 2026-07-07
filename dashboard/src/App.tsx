@@ -7,18 +7,19 @@
  * The whole data layer (useTelemetry off the mock) is unchanged; the secondary
  * channels come from useSensorSeries, which piggybacks on it without touching it.
  */
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { useTelemetry } from "@/hooks/useTelemetry"
 import { useSensorSeries } from "@/hooks/useSensorSeries"
 import { Card } from "@/components/ui/card"
-import { SideNav } from "@/components/SideNav"
+import { SideNav, type ViewId } from "@/components/SideNav"
 import { TopBar } from "@/components/TopBar"
 import { KpiRow } from "@/components/KpiRow"
 import { AltitudeChart } from "@/components/AltitudeChart"
 import { SensorChart } from "@/components/SensorChart"
 import { GoNoGo } from "@/components/GoNoGo"
 import { FlightTimeline } from "@/components/FlightTimeline"
+import { FlightMap } from "@/components/FlightMap"
 
 function ChartCard({
   title,
@@ -43,45 +44,55 @@ function ChartCard({
 }
 
 function App() {
+  const [view, setView] = useState<ViewId>("live")
   const telemetry = useTelemetry()
   const sensors = useSensorSeries(telemetry)
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <h1 className="sr-only">Rocket ground station — live telemetry</h1>
-      <SideNav />
+      <SideNav active={view} onSelect={setView} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar state={telemetry} />
-        <KpiRow frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
 
-        <main className="grid min-h-0 flex-1 grid-cols-[1fr_17rem] gap-2 p-2">
-          {/* sensor-chart column */}
-          <div className="flex min-h-0 min-w-0 flex-col gap-2">
-            <ChartCard
-              title="Altitude · m AGL"
-              right={telemetry.frame ? `${telemetry.chart.xs.length} pts` : "awaiting link"}
-              className="flex-[1.7]"
-            >
-              <AltitudeChart chart={telemetry.chart} />
-            </ChartCard>
+        {view === "live" ? (
+          <>
+            <KpiRow frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
 
-            <div className="grid min-h-0 flex-1 grid-cols-2 gap-2">
-              <ChartCard title="Vertical Speed · m/s">
-                <SensorChart xs={sensors.xs} ys={sensors.vspeed} rev={sensors.rev} unit="" signed />
-              </ChartCard>
-              <ChartCard title="Tilt · deg">
-                <SensorChart xs={sensors.xs} ys={sensors.tilt} rev={sensors.rev} unit="°" yDomain={[0, 180]} />
-              </ChartCard>
-            </div>
-          </div>
+            <main className="grid min-h-0 flex-1 grid-cols-[1fr_17rem] gap-2 p-2">
+              {/* sensor-chart column */}
+              <div className="flex min-h-0 min-w-0 flex-col gap-2">
+                <ChartCard
+                  title="Altitude · m AGL"
+                  right={telemetry.frame ? `${telemetry.chart.xs.length} pts` : "awaiting link"}
+                  className="flex-[1.7]"
+                >
+                  <AltitudeChart chart={telemetry.chart} />
+                </ChartCard>
 
-          {/* safety + phase */}
-          <div className="flex min-h-0 flex-col gap-2">
-            <GoNoGo frame={telemetry.frame} />
-            <FlightTimeline state={telemetry.frame?.flightState ?? null} />
-          </div>
-        </main>
+                <div className="grid min-h-0 flex-1 grid-cols-2 gap-2">
+                  <ChartCard title="Vertical Speed · m/s">
+                    <SensorChart xs={sensors.xs} ys={sensors.vspeed} rev={sensors.rev} unit="" signed />
+                  </ChartCard>
+                  <ChartCard title="Tilt · deg">
+                    <SensorChart xs={sensors.xs} ys={sensors.tilt} rev={sensors.rev} unit="°" yDomain={[0, 180]} />
+                  </ChartCard>
+                </div>
+              </div>
+
+              {/* safety + phase */}
+              <div className="flex min-h-0 flex-col gap-2">
+                <GoNoGo frame={telemetry.frame} />
+                <FlightTimeline state={telemetry.frame?.flightState ?? null} />
+              </div>
+            </main>
+          </>
+        ) : (
+          <main className="min-h-0 flex-1 p-2">
+            <FlightMap frame={telemetry.frame} link={telemetry.link} />
+          </main>
+        )}
       </div>
     </div>
   )
