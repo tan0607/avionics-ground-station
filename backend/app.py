@@ -19,7 +19,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from shared.protocol import packet
@@ -134,6 +135,20 @@ def create_app(config: Config) -> FastAPI:
 
     app = FastAPI(title="Rocket Ground Station", lifespan=lifespan)
 
+    # The production build is served same-origin by this app, so CORS is only
+    # needed for local `vite dev` (localhost:5173) reaching /stats + /session.
+    # Scope it to those dev origins + GET — NOT "*", which would let any website
+    # the operator happens to visit read the backend's telemetry/session files.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_methods=["GET"],
+        allow_headers=["*"],
+    )
+
     # --- WebSocket + stats registered BEFORE the catch-all static mount ---
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
@@ -161,6 +176,37 @@ def create_app(config: Config) -> FastAPI:
             "loss": asdict(ls),
             "loss_pct": round(ls.fraction * 100, 3),
         })
+
+    # --- active-session file downloads (PLDR export) ---
+    # Only these three names are servable; the whitelist check runs BEFORE any
+    # path join, so an arbitrary `name` can never traverse out of the session dir.
+    EXPORT_FILES = {
+        "telemetry.csv": "text/csv",
+        "events.csv": "text/csv",
+        "raw.log": "application/octet-stream",
+    }
+
+    @app.get("/session")
+    async def session_info() -> JSONResponse:
+        if rt.session is None:
+            return JSONResponse({"session": None, "files": []}, status_code=503)
+        present = [name for name in EXPORT_FILES if (rt.session.dir / name).is_file()]
+        return JSONResponse({"session": rt.session.session_id, "files": present})
+
+    @app.get("/session/{name}")
+    async def session_file(name: str):
+        if name not in EXPORT_FILES:
+            return JSONResponse(
+                {"error": "unknown file", "available": list(EXPORT_FILES)}, status_code=404
+            )
+        if rt.session is None:
+            return JSONResponse({"error": "no active session"}, status_code=503)
+        path = rt.session.dir / name
+        if not path.is_file():
+            return JSONResponse({"error": "not written yet"}, status_code=404)
+        return FileResponse(
+            path, media_type=EXPORT_FILES[name], filename=f"{rt.session.session_id}_{name}"
+        )
 
     # --- static dashboard last: Mount("/") matches everything ---
     if DIST_DIR.is_dir():

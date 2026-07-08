@@ -7,10 +7,12 @@
  * The whole data layer (useTelemetry off the mock) is unchanged; the secondary
  * channels come from useSensorSeries, which piggybacks on it without touching it.
  */
-import { useState, type ReactNode } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { useTelemetry } from "@/hooks/useTelemetry"
 import { useSensorSeries } from "@/hooks/useSensorSeries"
+import { useSettings } from "@/hooks/useSettings"
+import { useAlarmSound } from "@/hooks/useAlarmSound"
 import { Card } from "@/components/ui/card"
 import { SideNav, type ViewId } from "@/components/SideNav"
 import { TopBar } from "@/components/TopBar"
@@ -20,6 +22,8 @@ import { SensorChart } from "@/components/SensorChart"
 import { GoNoGo } from "@/components/GoNoGo"
 import { FlightTimeline } from "@/components/FlightTimeline"
 import { FlightMap } from "@/components/FlightMap"
+import { LogView } from "@/components/LogView"
+import { SettingsView } from "@/components/SettingsView"
 
 function ChartCard({
   title,
@@ -47,6 +51,14 @@ function App() {
   const [view, setView] = useState<ViewId>("live")
   const telemetry = useTelemetry()
   const sensors = useSensorSeries(telemetry)
+  const { settings } = useSettings()
+  // Buzzer lives at app level so alarms sound on every view, not just Settings.
+  const alarm = useAlarmSound(telemetry, settings)
+
+  // High-contrast (sunlight) mode: a root class bumps the ink/border vars.
+  useEffect(() => {
+    document.documentElement.classList.toggle("contrast-high", settings.highContrast)
+  }, [settings.highContrast])
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
@@ -56,7 +68,7 @@ function App() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar state={telemetry} />
 
-        {view === "live" ? (
+        {view === "live" && (
           <>
             <KpiRow frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
 
@@ -88,11 +100,17 @@ function App() {
               </div>
             </main>
           </>
-        ) : (
+        )}
+
+        {view === "map" && (
           <main className="min-h-0 flex-1 p-2">
             <FlightMap frame={telemetry.frame} link={telemetry.link} />
           </main>
         )}
+
+        {view === "log" && <LogView telemetry={telemetry} />}
+
+        {view === "settings" && <SettingsView telemetry={telemetry} alarm={alarm} />}
       </div>
     </div>
   )

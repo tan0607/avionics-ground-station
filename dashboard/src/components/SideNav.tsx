@@ -1,14 +1,13 @@
 /**
- * SideNav — the thin left view rail. Live and Map are the active views; Log /
- * Settings stay disabled placeholders for later milestones. The rail is
- * controlled: the parent owns the selected view and passes it down. Icons are
- * functional lucide marks, label + glyph, no decoration.
+ * SideNav — the thin left view rail. All four views (Live, Map, Log, Set) are
+ * active. The rail is controlled: the parent owns the selected view and passes
+ * it down. Icons are functional lucide marks, label + glyph, no decoration.
  */
 import { Activity, Map, ScrollText, Settings, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 /** The dashboard's top-level views. */
-export type ViewId = "live" | "map"
+export type ViewId = "live" | "map" | "log" | "settings"
 
 interface NavItem {
   id: ViewId | null // null = not yet wired (disabled placeholder)
@@ -20,8 +19,8 @@ interface NavItem {
 const ITEMS: NavItem[] = [
   { id: "live", label: "Live", icon: Activity },
   { id: "map", label: "Map", icon: Map },
-  { id: null, label: "Log", icon: ScrollText, disabled: true },
-  { id: null, label: "Set", icon: Settings, disabled: true },
+  { id: "log", label: "Log", icon: ScrollText },
+  { id: "settings", label: "Set", icon: Settings },
 ]
 
 interface SideNavProps {

@@ -124,6 +124,27 @@
   --radius-lg: calc(var(--radius) + 2px);
 }
 
+/*
+ * High-contrast (sunlight) mode — toggled by the Settings store, which sets
+ * `.contrast-high` on <html>. It re-points the base ink/border/semantic vars
+ * brighter; because every utility resolves `var(--ink)` etc. at use-time, the
+ * whole console lifts contrast with no per-component changes. Surfaces stay
+ * near-black — still a dark console, just readable in direct sun. Declared
+ * after :root so it wins on equal specificity.
+ */
+.contrast-high {
+  --surface: oklch(0.13 0 0);
+  --surface-2: oklch(0.19 0 0);
+  --border: oklch(0.42 0 0);
+  --border-strong: oklch(0.55 0 0);
+  --ink: oklch(1 0 0);
+  --ink-dim: oklch(0.86 0 0);
+  --ink-mute: oklch(0.72 0 0);
+  --nominal: oklch(0.86 0.18 158);
+  --caution: oklch(0.88 0.15 85);
+  --alarm: oklch(0.72 0.23 25);
+}
+
 @layer base {
   * {
     border-color: var(--border-color);
