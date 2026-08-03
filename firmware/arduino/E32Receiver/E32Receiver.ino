@@ -143,6 +143,7 @@ static uint32_t last_pkt_ms   = 0;
 static uint32_t last_stats_ms = 0;
 static uint32_t led_off_at    = 0;
 static bool     signal_warned = false;
+static bool     format_warned = false;  // "wrong payload format" is said once
 
 // ---------------------------------------------------------------------------
 // Printing helpers.
@@ -298,15 +299,38 @@ static void printStats() {
   Serial.print(bytes_seen);   Serial.println(F(" raw B ---"));
 
   // Raw bytes arriving with zero valid frames is the signature of a transmitter
-  // that is on-channel but not speaking this protocol. Say so, rather than
-  // leaving it to look like a dead link.
-  if (bytes_seen && !pkt_ok && !pkt_crcerr)
-    Serial.println(F("    ^ RF IS ARRIVING but no frame ever matched. The link works; "
-                     "the payload format does not.\r\n"
-                     "      The transmitter must send this exact 32-byte frame "
-                     "(AA 55 + 28 B + CRC16). Rebuild with -DE32_SHOW_RAW=1 to see it."));
+  // that is on-channel but not speaking this protocol. Worth saying -- ONCE.
+  // Reprinting it every 5 s buries the hex dump that actually diagnoses the
+  // problem, and the extra serial traffic starves SoftwareSerial of the
+  // interrupts it needs, corrupting the very output you are trying to read.
+  if (bytes_seen && !pkt_ok && !pkt_crcerr && !format_warned) {
+    format_warned = true;
+    Serial.println(F("    ^ RF arriving, no frame matched -- wrong payload format."));
+  }
   since_header = HEADER_EVERY;
 }
+
+#if E32_SHOW_RAW
+// Raw hex dump state. A partial line MUST get flushed on idle: a burst of 5
+// bytes that never reaches 16 would otherwise sit in the buffer forever and the
+// bytes you most need to see -- the first few off a marginal link -- would be
+// exactly the ones never printed.
+static uint8_t  rawCol = 0;
+static char     rawAscii[17];
+static uint32_t rawLastByteMs = 0;
+static const uint32_t RAW_FLUSH_MS = 300;
+
+// Not `static`, for the same auto-prototype reason as runSelfTest() below.
+void flushRawLine() {
+  if (rawCol == 0) return;
+  for (uint8_t i = rawCol; i < 16; i++) Serial.print(F("   "));  // pad the hex columns
+  rawAscii[rawCol] = '\0';
+  Serial.print(F(" |"));
+  Serial.print(rawAscii);
+  Serial.println('|');
+  rawCol = 0;
+}
+#endif
 
 // Feed one received byte through the framer. Split out of loop() so the
 // self-test can drive the identical path -- a self-test that used a shortcut
@@ -315,22 +339,13 @@ static void feedByte(uint8_t b) {
   bytes_seen++;
 
 #if E32_SHOW_RAW
-  // 16 bytes per line, hex then printable ASCII -- enough to recognise plain
-  // text from another sketch, or to spot a SYNC pair that never lines up.
-  static uint8_t col = 0;
-  static char    ascii[17];
-  if (col == 0) Serial.print(F("raw | "));
+  if (rawCol == 0) Serial.print(F("raw | "));
   if (b < 0x10) Serial.print('0');
   Serial.print(b, HEX);
   Serial.print(' ');
-  ascii[col] = (b >= 0x20 && b < 0x7F) ? (char)b : '.';
-  if (++col == 16) {
-    ascii[16] = '\0';
-    Serial.print(F(" |"));
-    Serial.print(ascii);
-    Serial.println('|');
-    col = 0;
-  }
+  rawAscii[rawCol] = (b >= 0x20 && b < 0x7F) ? (char)b : '.';
+  rawLastByteMs = millis();
+  if (++rawCol == 16) flushRawLine();
   since_header = HEADER_EVERY;
 #endif
 
@@ -462,6 +477,12 @@ void loop() {
   while (radio.available()) feedByte((uint8_t)radio.read());
 
   uint32_t now = millis();
+
+#if E32_SHOW_RAW
+  // Print a short burst once the line goes quiet, instead of waiting for a full
+  // 16-byte row that may never arrive.
+  if (rawCol && (now - rawLastByteMs) > RAW_FLUSH_MS) flushRawLine();
+#endif
 
   if (led_off_at && (int32_t)(now - led_off_at) >= 0) {
     digitalWrite(PIN_LED, LOW);
