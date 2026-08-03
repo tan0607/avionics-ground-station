@@ -1,16 +1,42 @@
 {
+    // IntelliSense for the ARDUINO IDE sketch only (firmware/arduino/E32Receiver),
+    // configured for its bench target: the 5 V Uno / ATmega328P.
+    //
+    // The PlatformIO targets (firmware/src, firmware/lib) are NOT configured here.
+    // PlatformIO generates its own firmware/.vscode/c_cpp_properties.json with the
+    // real xtensa toolchain and ~460 framework include paths -- nothing hand-written
+    // can keep up with that. Open `avionics-ground-station.code-workspace` so the
+    // firmware/ folder is its own workspace root and picks that file up.
+    //
+    // The previous version of this file pointed compilerPath at /usr/bin/clang and
+    // includePath at ~/Library/Arduino15 (the Arduino IDE's package dir, which does
+    // not exist on this machine). Host clang knows nothing about Arduino.h, millis(),
+    // or String, so every firmware file lit up red. That was the squiggles.
+    //
+    // Paths below point at the cores PlatformIO already downloaded, so this works
+    // whether or not the Arduino IDE itself is installed. If ~/.platformio is ever
+    // cleared, restore them with `pio pkg install` run inside firmware/.
     "configurations": [
         {
-            "name": "Mac",
+            "name": "Arduino sketch (Uno / ATmega328P)",
             "includePath": [
-    "${workspaceRoot}/**",
-    "${env:HOME}/Library/Arduino15/packages/**"],
-
-            "defines": [],
-            "compilerPath": "/usr/bin/clang",
-            "cStandard": "c17",
-            "cppStandard": "c++14",
-            "intelliSenseMode": "macos-clang-arm64"
+                "${workspaceFolder}/firmware/arduino/E32Receiver",
+                "${env:HOME}/.platformio/packages/framework-arduino-avr/cores/arduino",
+                "${env:HOME}/.platformio/packages/framework-arduino-avr/variants/standard",
+                "${env:HOME}/.platformio/packages/framework-arduino-avr/libraries/**",
+                "${env:HOME}/.platformio/packages/toolchain-atmelavr/avr/include"
+            ],
+            "defines": [
+                "ARDUINO=10808",
+                "ARDUINO_ARCH_AVR",
+                "ARDUINO_AVR_UNO",
+                "__AVR_ATmega328P__",
+                "F_CPU=16000000L"
+            ],
+            "compilerPath": "${env:HOME}/.platformio/packages/toolchain-atmelavr/bin/avr-gcc",
+            "cStandard": "c11",
+            "cppStandard": "c++11",
+            "intelliSenseMode": "gcc-x86"
         }
     ],
     "version": 4

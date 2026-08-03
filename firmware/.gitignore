@@ -3,6 +3,13 @@
 .pioenvs/
 .piolibdeps/
 
+# PlatformIO regenerates these from platformio.ini and they are ~460 absolute
+# paths into this machine's ~/.platformio -- useless on any other checkout.
+# Recreate with: pio project init --ide vscode
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+# (.vscode/extensions.json IS committed -- it recommends the PlatformIO extension.)
+
 # host-side verification binaries (see firmware/README.md)
 test/packet_check
 test/subsystem_check
