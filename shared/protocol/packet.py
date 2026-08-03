@@ -24,7 +24,7 @@ SYNC_BYTES = b"\xAA\x55"
 # BODY layout, little-endian, no padding. Order MUST match PROTOCOL.md and firmware.
 #   B msg_type | H seq | B flight_state | I onboard_ms | h baro_alt_m | h vspeed_dms |
 #   i gps_lat  | i gps_lon | h gps_alt_m | B gps_sats | B gps_fix | B tilt_deg |
-#   B vbat_dv  | B flags | B reserved
+#   B vbat_dv  | B flags | B health
 _BODY = struct.Struct("<BHBIhhiihBBBBBB")
 BODY_SIZE = _BODY.size                              # 28
 PACKET_SIZE = len(SYNC_BYTES) + BODY_SIZE + 2       # 32
@@ -55,12 +55,49 @@ FLAG_SD_OK      = 1 << 2   # onboard SD logging healthy
 FLAG_ARMED      = 1 << 3   # flight computer armed
 # bits 4-7 reserved
 
+# --- health bitfield (uint8) ------------------------------------------------
+# PER-PERIPHERAL health. Bit SET = that device initialised and is currently
+# responding; bit CLEAR = it is not, and every field it feeds is untrustworthy.
+#
+# This exists so a single dead peripheral degrades ONE row on the ground station
+# instead of collapsing the vehicle into a blanket "AV FAILED". The flight
+# computer never aborts boot on an init failure -- it flies with the bit clear.
+#
+# Init-failure vs in-flight failure is read off the *first* packet of a session:
+# a bit clear from the very first frame never came up at all (init failure); a
+# bit that goes 1 -> 0 later died in flight. The Log view records both.
+HEALTH_BARO = 1 << 0   # barometer responding
+HEALTH_IMU  = 1 << 1   # IMU responding
+HEALTH_GPS  = 1 << 2   # GPS receiver responding (link alive; NOT fix quality)
+HEALTH_SD   = 1 << 3   # SD card present + mounted
+HEALTH_PYRO = 1 << 4   # pyro / continuity sense circuit responding
+HEALTH_VBAT = 1 << 5   # battery ADC reading in a sane range
+# bits 6-7 spare
+#
+# Note HEALTH_SD ("card mounted") is distinct from FLAG_SD_OK ("writes are
+# currently succeeding") -- a mounted card whose writes fail is 1 + 0.
+
+# Ordered roster: (mask, short name, CSV column). Drives the ground-station UI
+# and the CSV so adding a peripheral is a one-line change here.
+SUBSYSTEMS = (
+    (HEALTH_BARO, "BARO", "hw_baro"),
+    (HEALTH_IMU,  "IMU",  "hw_imu"),
+    (HEALTH_GPS,  "GPS",  "hw_gps"),
+    (HEALTH_SD,   "SD",   "hw_sd"),
+    (HEALTH_PYRO, "PYRO", "hw_pyro"),
+    (HEALTH_VBAT, "VBAT", "hw_vbat"),
+)
+
+# All peripherals nominal -- what `health` reads on a clean boot.
+HEALTH_ALL_OK = HEALTH_BARO | HEALTH_IMU | HEALTH_GPS | HEALTH_SD | HEALTH_PYRO | HEALTH_VBAT
+
 # Shared CSV column contract -- backend (telemetry.csv) and PLDR notebook agree here.
 CSV_COLUMNS = [
     "host_time", "gps_time", "onboard_ms", "seq", "flight_state",
     "baro_alt_m", "vspeed_ms", "gps_lat", "gps_lon", "gps_alt_m",
     "gps_sats", "gps_fix", "tilt_deg", "vbat_v",
     "continuity", "pyro_fired", "sd_ok", "armed",
+    *(col for _, _, col in SUBSYSTEMS),
 ]
 
 
@@ -80,7 +117,7 @@ class Telemetry:
     vbat_dv: int = 0             # uint8, volts * 10
     flags: int = 0              # uint8 bitfield
     msg_type: int = MSG_TELEMETRY
-    reserved: int = 0
+    health: int = 0             # uint8 bitfield, HEALTH_* (bit set = peripheral OK)
 
     # engineering-unit conveniences
     @property
@@ -101,6 +138,18 @@ class Telemetry:
 
     def flag(self, mask: int) -> bool:
         return bool(self.flags & mask)
+
+    def healthy(self, mask: int) -> bool:
+        """True if the peripheral(s) in `mask` are initialised and responding."""
+        return self.health & mask == mask
+
+    def failed_subsystems(self) -> list[str]:
+        """Short names of every peripheral currently reporting unhealthy.
+
+        Empty list = all nominal. Use this instead of a single 'AV OK/FAILED'
+        boolean -- the whole point of the health byte is naming what died.
+        """
+        return [name for mask, name, _ in SUBSYSTEMS if not self.health & mask]
 
     def to_csv_row(self, host_time: str, gps_time: str = "") -> dict:
         """One dict keyed by CSV_COLUMNS. Backend writes host_time + gps_time."""
@@ -127,6 +176,7 @@ class Telemetry:
             "pyro_fired": int(self.flag(FLAG_PYRO_FIRED)),
             "sd_ok": int(self.flag(FLAG_SD_OK)),
             "armed": int(self.flag(FLAG_ARMED)),
+            **{col: int(bool(self.health & mask)) for mask, _, col in SUBSYSTEMS},
         }
 
 
@@ -145,7 +195,7 @@ def encode(t: Telemetry) -> bytes:
     body = _BODY.pack(
         t.msg_type, t.seq, int(t.flight_state), t.onboard_ms,
         t.baro_alt_m, t.vspeed_dms, t.gps_lat, t.gps_lon, t.gps_alt_m,
-        t.gps_sats, int(t.gps_fix), t.tilt_deg, t.vbat_dv, t.flags, t.reserved,
+        t.gps_sats, int(t.gps_fix), t.tilt_deg, t.vbat_dv, t.flags, t.health,
     )
     return SYNC_BYTES + body + struct.pack("<H", crc16_ccitt(body))
 
@@ -159,12 +209,12 @@ def decode(frame: bytes) -> Telemetry | None:
     if crc16_ccitt(body) != crc_rx:
         return None
     (msg_type, seq, state, ms, baro, vspd, lat, lon, galt,
-     sats, fix, tilt, vbat, flags, reserved) = _BODY.unpack(body)
+     sats, fix, tilt, vbat, flags, health) = _BODY.unpack(body)
     return Telemetry(
         seq=seq, flight_state=state, onboard_ms=ms, baro_alt_m=baro,
         vspeed_dms=vspd, gps_lat=lat, gps_lon=lon, gps_alt_m=galt,
         gps_sats=sats, gps_fix=fix, tilt_deg=tilt, vbat_dv=vbat,
-        flags=flags, msg_type=msg_type, reserved=reserved,
+        flags=flags, msg_type=msg_type, health=health,
     )
 
 
@@ -212,10 +262,21 @@ if __name__ == "__main__":
         gps_lat=32_437_000, gps_lon=1_017_061_000, gps_alt_m=1300,
         gps_sats=11, gps_fix=GpsFix.FIX_3D, tilt_deg=4, vbat_dv=79,
         flags=FLAG_CONTINUITY | FLAG_ARMED | FLAG_SD_OK,
+        health=HEALTH_ALL_OK,
     )
     frame = encode(sample)
     assert len(frame) == PACKET_SIZE == 32, len(frame)
     assert decode(frame) == sample, "round-trip mismatch"
+
+    # Health byte: a dead peripheral must survive the round trip and be NAMED,
+    # not collapse into a blanket failure.
+    assert sample.failed_subsystems() == [], sample.failed_subsystems()
+    degraded = decode(encode(Telemetry(health=HEALTH_ALL_OK & ~HEALTH_BARO & ~HEALTH_GPS)))
+    assert degraded is not None
+    assert degraded.failed_subsystems() == ["BARO", "GPS"], degraded.failed_subsystems()
+    assert degraded.healthy(HEALTH_IMU) and not degraded.healthy(HEALTH_BARO)
+    # An all-zero health byte (pre-health firmware) must not read as "all fine".
+    assert len(decode(encode(Telemetry())).failed_subsystems()) == len(SUBSYSTEMS)
 
     parser = PacketParser()
     noisy = b"\x00\x13junk\xAA" + frame[:7] + frame + b"\xAA" + frame  # garbage + partials + 2 good

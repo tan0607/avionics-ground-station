@@ -44,6 +44,21 @@ enum { GPS_FIX_NONE = 0, GPS_FIX_2D = 2, GPS_FIX_3D = 3 };
 #define FLAG_SD_OK      (1u << 2)  // onboard SD logging healthy
 #define FLAG_ARMED      (1u << 3)  // flight computer armed
 
+// health bitfield (matches packet.py HEALTH_*). Bit SET = that peripheral
+// initialised and is currently responding; CLEAR = it is not, and every field it
+// feeds is untrustworthy. A cleared bit NEVER stops the vehicle transmitting --
+// that is the whole point: one dead sensor degrades one row on the ground
+// station instead of taking the flight computer down with it. See lib/Subsystem.
+#define HEALTH_BARO (1u << 0)  // barometer responding
+#define HEALTH_IMU  (1u << 1)  // IMU responding
+#define HEALTH_GPS  (1u << 2)  // GPS receiver responding (link alive, not fix quality)
+#define HEALTH_SD   (1u << 3)  // SD card present + mounted
+#define HEALTH_PYRO (1u << 4)  // pyro / continuity sense circuit responding
+#define HEALTH_VBAT (1u << 5)  // battery ADC reading in a sane range
+// bits 6-7 spare
+#define HEALTH_ALL_OK (HEALTH_BARO | HEALTH_IMU | HEALTH_GPS | \
+                       HEALTH_SD   | HEALTH_PYRO | HEALTH_VBAT)
+
 // BODY layout. Order/types match Python struct "<BHBIhhiihBBBBBB" exactly.
 // ESP32 (and the host) are little-endian, so this packed struct maps straight
 // onto the wire BODY with no byte-swapping.
@@ -63,7 +78,7 @@ typedef struct {
   uint8_t  tilt_deg;      // 0..180
   uint8_t  vbat_dv;       // V * 10
   uint8_t  flags;
-  uint8_t  reserved;      // 0
+  uint8_t  health;        // HEALTH_* bitfield; bit set = peripheral OK
 } telem_body_t;
 #pragma pack(pop)
 

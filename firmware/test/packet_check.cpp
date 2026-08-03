@@ -5,8 +5,8 @@
 // this passes, firmware and ground station agree byte-for-byte with no hardware.
 //
 // Reference (generated from packet.py):
-//   frame = aa5500d2040188130000df048c0508f3ee01881e9f3c14050b03044f0d00744e
-//   crc16(body) = 0x4e74
+//   frame = aa5500d2040188130000df048c0508f3ee01881e9f3c14050b03044f0d3fc889
+//   crc16(body) = 0x89c8   (byte 29 = health 0x3F = all peripherals nominal)
 //
 // Build & run on the laptop (no ESP32 toolchain needed):
 //   cc -std=c++11 -I firmware/lib/TelemPacket firmware/test/packet_check.cpp -o firmware/test/packet_check
@@ -18,9 +18,9 @@
 // The 32-byte frame packet.py produces for the reference Telemetry sample.
 static const uint8_t REF_FRAME[TELEM_PACKET_SIZE] = {
     0xaa,0x55,0x00,0xd2,0x04,0x01,0x88,0x13,0x00,0x00,0xdf,0x04,0x8c,0x05,0x08,0xf3,
-    0xee,0x01,0x88,0x1e,0x9f,0x3c,0x14,0x05,0x0b,0x03,0x04,0x4f,0x0d,0x00,0x74,0x4e,
+    0xee,0x01,0x88,0x1e,0x9f,0x3c,0x14,0x05,0x0b,0x03,0x04,0x4f,0x0d,0x3f,0xc8,0x89,
 };
-static const uint16_t REF_CRC = 0x4e74;
+static const uint16_t REF_CRC = 0x89c8;
 
 int main() {
   telem_body_t body;
@@ -39,7 +39,7 @@ int main() {
   body.tilt_deg     = 4;
   body.vbat_dv      = 79;            // 7.9 V
   body.flags        = FLAG_CONTINUITY | FLAG_ARMED | FLAG_SD_OK;  // 0x0D
-  body.reserved     = 0;
+  body.health       = HEALTH_ALL_OK;                              // 0x3F
 
   uint8_t frame[TELEM_PACKET_SIZE];
   size_t n = telem_build_frame(&body, frame);

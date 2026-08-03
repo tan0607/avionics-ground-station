@@ -41,7 +41,7 @@ Rate: 4 Hz nominal (~128 B/s). E32 air-rate 2.4 kbps, 9600 baud UART.
 | 26  | 1    | tilt_deg     | u8   | tilt from vertical, 0..180°                        |
 | 27  | 1    | vbat_dv      | u8   | battery volts × 10 (÷10 = V)                        |
 | 28  | 1    | flags        | u8   | bitfield (below)                                   |
-| 29  | 1    | reserved     | u8   | 0 (padding / phase-2 headroom)                     |
+| 29  | 1    | health       | u8   | per-peripheral health bitfield (below)             |
 | 30  | 2    | crc16        | u16  | CRC-16/CCITT-FALSE over bytes 2..29                 |
 
 Python `struct` format (little-endian, no padding): BODY = `<BHBIhhiihBBBBBB` (28 bytes).
@@ -71,6 +71,42 @@ Python `struct` format (little-endian, no padding): BODY = `<BHBIhhiihBBBBBB` (2
 | 2   | 0x04 | SD_OK      | onboard SD logging healthy |
 | 3   | 0x08 | ARMED      | flight computer armed      |
 | 4–7 | —    | reserved   | 0                          |
+
+## health (u8 bitfield)
+
+Bit **set** = that peripheral initialised and is currently responding.
+Bit **clear** = it is not, and every field it feeds is untrustworthy.
+
+| Bit | Mask | Name | Feeds                    |
+|----:|-----:|------|--------------------------|
+| 0   | 0x01 | BARO | `baro_alt_m`, `vspeed_dms` |
+| 1   | 0x02 | IMU  | `tilt_deg`               |
+| 2   | 0x04 | GPS  | `gps_*`                  |
+| 3   | 0x08 | SD   | onboard logging          |
+| 4   | 0x10 | PYRO | continuity sense         |
+| 5   | 0x20 | VBAT | `vbat_dv`                |
+| 6–7 | —    | spare | 0                       |
+
+`0x3F` = all nominal.
+
+**Why this byte exists.** A peripheral failure must degrade *one row* on the
+ground station, never the whole vehicle. The flight computer does not abort boot
+when a sensor's init fails and does not stall its loop when one dies in flight —
+it clears the bit, keeps transmitting at 4 Hz, and lets the operator see exactly
+what is down. Enforced by `firmware/lib/Subsystem`, proven by
+`firmware/test/subsystem_check.cpp`.
+
+**Init failure vs in-flight failure** is read off the *first* frame of a session:
+a bit clear from the very first packet never came up at all; a bit that goes
+1 → 0 later died in flight. Both are recorded in the Log view.
+
+**Distinct from `FLAG_SD_OK`.** `HEALTH_SD` = card present and mounted;
+`FLAG_SD_OK` = writes are currently succeeding. A mounted card with failing
+writes is `1` + `0`.
+
+**A `health` of `0x00` means "no peripherals up", not "field absent."** Decoders
+reading pre-health logs should treat a missing byte as *unknown* and render it
+as such — six red alarms for an old capture would be a false alarm.
 
 ## CRC-16/CCITT-FALSE
 
@@ -113,7 +149,7 @@ typedef struct {
     uint8_t  tilt_deg;
     uint8_t  vbat_dv;       // V * 10
     uint8_t  flags;
-    uint8_t  reserved;
+    uint8_t  health;        // HEALTH_* bitfield
 } body_t;                   // sizeof == 28
 #pragma pack(pop)
 
@@ -129,8 +165,13 @@ Backend `telemetry.csv` and the PLDR notebook share one column order (`packet.CS
 ```
 host_time, gps_time, onboard_ms, seq, flight_state, baro_alt_m, vspeed_ms,
 gps_lat, gps_lon, gps_alt_m, gps_sats, gps_fix, tilt_deg, vbat_v,
-continuity, pyro_fired, sd_ok, armed
+continuity, pyro_fired, sd_ok, armed,
+hw_baro, hw_imu, hw_gps, hw_sd, hw_pyro, hw_vbat
 ```
+
+The `hw_*` columns are the decoded `health` bits (1 = peripheral OK), so a
+post-flight analysis can tell "the altitude went flat because the baro died at
+T+14" from "the rocket stopped climbing".
 
 `host_time` = laptop receive time; `gps_time` = from GPS if present. Values are decoded engineering
 units (m/s, volts, decimal degrees); booleans are 0/1. `packet.Telemetry.to_csv_row(host_time, gps_time)`

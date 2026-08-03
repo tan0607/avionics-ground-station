@@ -126,6 +126,9 @@ def simulate_flight():
             tilt_deg=tilt,
             vbat_dv=int(round(vbat * 10)),
             flags=flags,
+            # Healthy vehicle. Clear a bit (e.g. `& ~pk.HEALTH_BARO`) to rehearse
+            # a peripheral loss against the ground station before flight.
+            health=pk.HEALTH_ALL_OK,
         )
 
         if state == pk.FlightState.LANDED:
