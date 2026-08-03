@@ -78,6 +78,51 @@ first** — this is the one path that writes to the module.
 
 Do this for the receiving module *and* the airborne one.
 
+## Link test against someone else's transmitter
+
+Two radios agreeing on RF is **not** the same as two radios agreeing on the payload.
+This sketch only prints frames that are 32 bytes, start `AA 55`, and pass CRC. A
+transmitter sending `"Hello World"` — or any other protocol — is received perfectly
+and then silently discarded, which on screen is indistinguishable from a dead link.
+
+So the stats line counts **raw bytes** separately from valid frames:
+
+```
+--- 0 ok | 0 crc err | 0 lost (0.0%) | 448 raw B ---
+    ^ RF IS ARRIVING but no frame ever matched. The link works; the payload format does not.
+```
+
+| ok | raw B | What it means |
+|---|---|---|
+| climbing | climbing | working — you are decoding real telemetry |
+| 0 | 0 | no RF at all → channel, air rate, antenna, or TX not running |
+| 0 | climbing | **RF is fine, formats disagree** → their sketch is not sending this frame |
+| 0, crc err climbing | climbing | right format, damaged in the air → weak signal or antenna |
+
+For the third case, rebuild with raw mode to see exactly what they are sending:
+
+```bash
+cd firmware/arduino && PLATFORMIO_BUILD_FLAGS="-DE32_SHOW_RAW=1" pio run -e uno -t upload
+```
+
+```
+raw | 48 65 6C 6C 6F 20 57 6F 72 6C 64 0D 0A 48 65 6C  |Hello World..Hel|
+```
+
+**Both ends must therefore run the same protocol.** The transmitter side of this
+project is `firmware/src/onboard_tx.cpp` (ESP32-S3, `pio run -e onboard_tx -t upload`).
+If your partner is on a 5 V Arduino instead, they need an Arduino-IDE transmitter
+sketch built on the same `TelemPacket.h` — there isn't one in this repo yet.
+
+Before any range test, also confirm:
+
+- **Antennas fitted on both modules.** Transmitting into an unfitted antenna port
+  can damage the PA.
+- **Both modules programmed identically** — channel `0x17`, 2.4 k air rate, 9600
+  baud (see above). This is the single most common reason two E32s never meet.
+- **Prove your own half first** with `-DE32_SELFTEST=1`. If the self-test passes and
+  the air is silent, stop debugging this sketch — the fault is on the RF side.
+
 ## Reading the output
 
 ```
