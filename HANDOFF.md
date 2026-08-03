@@ -8,7 +8,7 @@
 ## 0. TL;DR
 
 - We're building a **ground station**: receive E32 LoRa telemetry from a rocket → live web dashboard → CSV export for a post-launch data report (PLDR). Downlink-only prototype; uplink is phase 2.
-- Full plans live in **`GROUND_STATION_PLAN.md`** (hardware/protocol/architecture) and **`DESIGN_SPECS.md`** (dashboard UI/mission-control aesthetic). Read both.
+- Full plans live in **`GROUND_STATION_PLAN.md`** (hardware/protocol/architecture) and **`DESIGN_SPECS.md`** (dashboard UI — shadcn admin-dashboard 骨架 + mission-control 纪律). Read both.
 - Work is split across **multiple Claude Code windows**, one scoped job each. This file is the coordination hub.
 - **The 32-byte packet is the shared contract.** It lives in `shared/protocol/packet.py` (source of truth). Never redefine the struct in another window — import it.
 
@@ -48,7 +48,7 @@ Everything else (HANDOFF.md, the prompts, PROTOCOL.md, packet.py, all built code
 
 - Use **`impeccable`** in **product register** (`audit` / `polish` / `quieter`; go easy on `bolder`) to generate/refine UI.
 - Finish UI work with an **`avoid-ai-design`** audit.
-- Run **`/impeccable init`** as the **first step in the frontend window** (feed it `DESIGN_SPECS.md §4` — mission-control direction). It is NOT a global prerequisite; it only matters where UI is written.
+- Run **`/impeccable init`** as the **first step in the frontend window** (feed it `DESIGN_SPECS.md §4` — shadcn dashboard 骨架 + mission-control 纪律：all-black, no AI slop). It is NOT a global prerequisite; it only matters where UI is written.
 - **Do NOT use the official `frontend-design` skill.** (User preference; impeccable + avoid-ai-design is the chosen pair — stacking more design skills makes them fight.)
 
 ## 3. Repo layout (one dir per window ⇒ near-zero merge conflicts)
@@ -134,17 +134,30 @@ pyserial. "Raw first, then parse." Commit when fake data flows serial→CSV→We
 ```
 
 ### Window 2 — Frontend (design-skill window)
+
+> M1 已建（commit `dfa50e9`：单屏 ops console，status bar + altitude chart + readouts，跑 mock）。
+> 现在的任务是 **把它改成 shadcn admin-dashboard shell**（方向见下 + DESIGN_SPECS §3/§4），数据层完全不动。
+
 ```
-You're the FRONTEND window. FIRST run /impeccable init (answer with DESIGN_SPECS.md §4 direction: product register, near-black
-ops console, monospace, semantic color only). Then read HANDOFF.md, DESIGN_SPECS.md (esp. §3 layout, §4 aesthetic), GROUND_STATION_PLAN.md §5.
-Scaffold Vite + React + TS in dashboard/ with Tailwind + shadcn (use the CURRENT official shadcn init/commands — look them up, don't
-rely on memory), add uPlot, set up the shadcn MCP (.mcp.json in project root, restart, /mcp to confirm). Milestone 1: top status bar
-(flight state / T+ timer / link age / loss %) + streaming uPlot altitude chart + big-number readout column
-(ALT/VSPEED/MAX ALT/VBAT/TILT), fed by a native WebSocket client with auto-reconnect. Until the backend WS exists, drive from a mock
-generator matching shared/protocol/PROTOCOL.md. DESIGN RULES: ops console, not a SaaS page — near-black bg, monospace data, 1px
-dividers (no floating shadow cards), semantic color only (green/amber/red/cyan). Use impeccable (audit/polish/quieter), finish with an
-avoid-ai-design audit. Do NOT use the frontend-design skill. Fully offline — no CDNs, self-host fonts. Commit when milestone 1 renders
-live off the mock.
+You're the FRONTEND window. FIRST run /impeccable init (answer with DESIGN_SPECS.md §4: shadcn admin-dashboard 骨架 + mission-control
+纪律 — all-black, monospace data, semantic color only, no AI slop). Then read HANDOFF.md, DESIGN_SPECS.md (esp. §3 layout, §4 aesthetic),
+GROUND_STATION_PLAN.md §5. dashboard/ already exists (Vite+React+TS+Tailwind4+shadcn+uPlot, mock源可跑).
+
+REWORK M1 into a shadcn admin-dashboard layout WITHOUT touching the data layer:
+- KEEP UNCHANGED: src/hooks/useTelemetry.ts (ref+rev 架构,已验证,不是性能bug), src/lib/{mock,protocol,wsClient}.ts,
+  UPlotChart.tsx 的 imperative + setData(rev) 模式.
+- BUILD the shell: 左侧细导航栏 (Live 有效; Map/Log/Settings 占位, lucide 图标) + 顶栏 (mission名 + T+时钟 + link状态pill +
+  loss% + source).
+- KPI 卡片行 (shadcn Card): ALT / APOGEE / V-SPEED / TILT / VBAT / GPS(sats·fix). 每张 = 小号大写标签 + 大号 JetBrains Mono 数字
+  + 单位/状态行.
+- 主区: 大高度图表卡 + 右侧 GO/NO-GO (continuity/pyro/sd/armed 状态点) + 飞行状态时间线.
+- AltitudeChart.tsx 的 series 加 paths: uPlot.paths.spline() 平滑曲线 (数据是4Hz,直线插值看着顿); apogee marker 保留.
+
+DESIGN RULES (硬性,做完跑 impeccable polish/quieter + avoid-ai-design 终审):
+near-black 底 (oklch(0.14 0 0) 一档,卡片surface再亮一档), 1px hairline, 单一青色数据强调色, 语义状态色(绿/琥珀/红),
+数字全 mono + tabular-nums. 禁止: 紫/靛渐变, glassmorphism, 发光, rounded-2xl 悬浮重阴影糖果卡, emoji 图标. 卡片扁平统一圆角边框1px阴影极弱.
+Do NOT use the frontend-design skill. Fully offline — no CDNs, self-host fonts.
+验收: npm run dev, mock 源跑完整飞行, 一屏不滚动, 曲线顺滑, KPI 实时更新, GO/NO-GO 在 apogee/deploy 变色. Commit the rework.
 ```
 
 ### Window 3 — Map
@@ -181,5 +194,5 @@ fix. Commit per target.
 - **One packet definition.** Only `shared/protocol/packet.py` defines the struct/CRC. Everyone imports it. Firmware mirrors PROTOCOL.md byte-for-byte.
 - **Commit per milestone**, scoped to your window's directory (dir separation keeps windows from colliding).
 - **Offline-first** everywhere: no CDNs, self-host fonts, offline map tiles. `npm run build` output must run with the network off.
-- **Aesthetic** = mission-control / NASA console (DESIGN_SPECS §4), not a SaaS landing page.
+- **Aesthetic** = shadcn admin-dashboard 骨架 + mission-control 纪律 (DESIGN_SPECS §4): 结构像 SaaS dashboard，气质像 mission console —— all-black, mono, semantic color, no AI slop.
 - **Raw first, then parse** on the backend (log bytes to raw.log before decoding).

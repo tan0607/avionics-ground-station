@@ -24,38 +24,51 @@
 | 通信 | **原生 WebSocket** + 简单重连逻辑 | FastAPI 原生支持，不引 socket.io 减依赖 |
 | 状态 | React state / zustand（如果需要） | 数据流简单，别上 Redux |
 
-## 3. 布局（单屏，1080p laptop）
+## 3. 布局（shadcn admin-dashboard shell，单屏 1080p laptop）
+
+采用 shadcn admin dashboard 的结构：**左侧细导航栏 + 顶栏 + KPI 卡片网格 + 主图表 + go/no-go 面板**。这套结构让数据像 SaaS dashboard 那样铺开展示（这正是要的效果），但气质仍是 mission console（见 §4）。
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│ FLIGHT STATE: ASCENT   T+ 00:12.4   ● LINK 0.3s  loss 2.1%     │ ← 顶栏：状态+计时+链路
-├──────────────────────────────────┬─────────────────────────────┤
-│                                  │  ALT      1 247 m   ▲       │
-│   Altitude vs Time (uPlot)       │  VSPEED   +142 m/s          │
-│   [实时曲线 + apogee 标记]        │  MAX ALT  1 247 m           │ ← 大数字读出区
-│                                  │  VBAT     7.9 V  ●          │   (mono 字体)
-│                                  │  TILT     4°                │
-├──────────────────────────────────┤  CONT     ● ARMED           │
-│   Vertical Speed (uPlot)         ├─────────────────────────────┤
-│                                  │  MAP (Leaflet offline)      │
-├──────────────────────────────────┤  轨迹 + 落点大字坐标         │
-│ EVENT LOG                        │  3.2437°N 101.7061°E        │
-│ 12:01:03 LIFTOFF  12:01:15 ...   │  ↖ 320m NW from GS          │
-└──────────────────────────────────┴─────────────────────────────┘
+┌──────┬─────────────────────────────────────────────────────────────┐
+│      │ MISSION · T+00:12.4    ● LINK 0.3s   loss 2.1%   src: mock  │ ← 顶栏
+│ NAV  ├─────────────────────────────────────────────────────────────┤
+│      │ ┌ALT─────┐┌APOGEE──┐┌V-SPEED─┐┌TILT──┐┌VBAT──┐┌GPS────┐     │ ← KPI 卡片行
+│ ●Live│ │1 247 m ││1 247 m ││+142m/s ││  4°  ││7.9 V ││11 · 3D│     │   (shadcn Card,
+│  Map │ └────────┘└────────┘└────────┘└──────┘└──────┘└───────┘     │    扁平克制)
+│  Log ├──────────────────────────────────────────┬──────────────────┤
+│  Set │  ALTITUDE vs TIME  (uPlot, spline)        │ GO / NO-GO       │
+│      │  [实时曲线 + apogee 标记]                  │ CONTINUITY   ●   │
+│      │                                           │ PYRO         ●   │
+│      │                                           │ SD / ARMED   ●   │
+│      │                                           ├──────────────────┤
+│      │                                           │ FLIGHT STATE     │
+│      │                                           │ pad→boost→…      │
+│      └──────────────────────────────────────────┴──────────────────┘
+└──────┴─────────────────────────────────────────────────────────────┘
 ```
 
+- **左侧栏**：细窄，lucide 图标 + label。现在只有 `Live` 有效；`Map / Log / Settings` 先占位（Map 由 W3 接入）。dashboard 感主要来自这个 shell。
+- **KPI 卡片行**：真正用 shadcn `Card` —— 小号大写标签 + 大号 mono 数字 + 一行单位/状态。
+- **主图**：大高度图表卡（spline 平滑）+ 右侧 GO/NO-GO 状态点 + 飞行状态时间线。
 - 报警态（如 "apogee 已过 + 未开伞"）：顶栏整条变红闪烁 + 蜂鸣（Web Audio）
 - Link 超 3s 无包：LINK indicator 红 + "LAST PACKET 8.2s AGO" 放大
 
-## 4. 视觉方向：Mission Control，不是 SaaS landing page
+## 4. 视觉方向：SaaS dashboard 骨架 + mission-control 纪律
+
+结构学 SaaS admin dashboard（§3 的 shell + 卡片），气质仍是 mission console。**要黑就黑到底，不做 AI slop。**
 
 **Anti-AI-slop 规则**（违反即打回）：
-- ❌ 紫色渐变、玻璃拟态、默认 shadcn 圆角卡片海、Inter/Roboto 默认字体
-- ✅ **深色底**（近黑 `#0a0e12` 类），面板用 1px 边线分区而不是浮起阴影
-- ✅ 数据一律 **monospace**（JetBrains Mono / IBM Plex Mono，self-host）；标签用小号大写字母 + letter-spacing
-- ✅ 颜色只承载语义：绿=nominal、琥珀=caution、红=alarm、青/白=数据。装饰性颜色 = 0
-- ✅ 密度向 NASA/SpaceX console 靠，不是营销 dashboard 的大留白
-- 参考气质：Open MCT、SpaceX webcast telemetry 条、Grafana dark
+- ❌ 紫/靛渐变、玻璃拟态、发光边、Inter/Roboto 默认字体、emoji 当图标（用 lucide）
+- ❌ 圆角卡片"海"——重投影、悬浮、每张不同圆角/间距的糖果卡
+- ✅ **near-black 底**（`oklch(0.14 0 0)` 一档；卡片 surface 再亮一档），1px hairline 分区
+- ✅ 卡片可以用 shadcn `Card`，但**扁平、统一小圆角、边框 1px、阴影极弱**——卡片是数据容器，不是装饰
+- ✅ 数据一律 **monospace**（JetBrains Mono，self-host）+ `tabular-nums`；标签用小号大写字母 + letter-spacing
+- ✅ 颜色只承载语义：绿=nominal、琥珀=caution、红=alarm、青=数据强调（唯一强调色）。装饰性颜色 = 0
+- ✅ 密度向 Grafana / Vercel / Linear 那种 dark admin console 靠——信息密但克制，不是营销页大留白
+
+**KPI 卡片**：小号大写标签 + 大号 mono 数字 + 一行单位/状态。ALT / APOGEE / V-SPEED / TILT / VBAT / GPS(sats·fix)。
+**曲线平滑**：uPlot altitude series 加 `paths: uPlot.paths.spline()` —— 数据本身 4Hz（250ms/点），直线插值看着"顿"，spline 让曲线顺。数据层（`useTelemetry` 的 ref + rev 架构）**不要动**，那不是性能 bug。
+参考气质：Grafana dark、Vercel/Linear dashboard、SpaceX webcast telemetry 条。
 
 ## 5. Claude Code 设计类 skills（GitHub 上真实存在，已验证）
 
