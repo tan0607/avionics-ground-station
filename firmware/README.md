@@ -34,6 +34,34 @@ DevKitC / WROOM-32 you have.
 Onboard LED (packet-RX indicator on the bridge) = GPIO2 on most DevKitC boards.
 Pins are constants at the top of each `src/*.cpp` — change them to match your board.
 
+## The other rule: one dead peripheral is not a dead vehicle
+
+`lib/Subsystem` enforces the guarantee that **no single peripheral can stop the
+vehicle booting or transmitting**:
+
+- **Init failure is never fatal.** `setup()` tries every peripheral once and
+  records the result. There is no `while (1)` in that path. A board with all six
+  devices dead still boots and still downlinks — telling you all six are dead.
+- **In-flight death never stalls the loop.** Three consecutive failed reads mark
+  a peripheral dead; it is then skipped and re-init'd every ~2 s, so a brownout
+  that clears recovers on its own.
+- **The ground station is told *which* device died,** by name, via the `health`
+  byte (`PROTOCOL.md`). Never a blanket "AV FAILED".
+
+**Your half of the contract:** `init()` and `read()` must return in a few ms.
+The scheduler bounds *how often* a broken device is touched; it cannot bound a
+call that never returns. For I2C that means `Wire.setTimeOut()` **and**
+`I2CRecover.h` — a slave that browns out mid-transfer holds SDA low and wedges
+the bus for every other device on it, which is the classic "one sensor died and
+everything died" cascade.
+
+```bash
+cc -std=c++11 -I firmware/lib/TelemPacket -I firmware/lib/Subsystem \
+   firmware/test/subsystem_check.cpp firmware/lib/Subsystem/Subsystem.cpp \
+   -lstdc++ -o firmware/test/subsystem_check
+./firmware/test/subsystem_check
+```
+
 ## The one rule: AUX discipline
 
 The E32 has no flow control other than the **AUX** pin. `AUX LOW = busy`
@@ -86,13 +114,21 @@ sketch folder alongside the relevant `src/*.cpp` renamed to `<folder>.ino`.
 ## Onboard TX (Target 2)
 
 `src/onboard_tx.cpp` is the **radio + packet layer** of the flight computer. Every
-250 ms it calls `read_sensors()`, builds the frame, and writes it AUX-safely.
+250 ms it services the peripherals, builds the frame, and writes it AUX-safely.
 
-- **The sensor seam.** `read_sensors(telem_body_t*)` is the one function you own — it
-  fills the body from your real baro / NEO-M8N GPS / IMU / vbat and flight state
-  machine. It ships with a working *demo* (pad-state, launch-site GPS fix) so the board
-  transmits on the bench immediately. **Keep the units exactly as `PROTOCOL.md`**
-  (dm/s, deg×1e7, V×10, tilt 0..180). Do not touch framing/CRC/TX below the seam.
+- **The sensor seam.** Each peripheral owns an `init()` and a `read()` pair, listed
+  in the `g_subsys[]` table. Those are the functions you fill from your real baro /
+  NEO-M8N GPS / IMU / vbat drivers; readings land in the `g` struct. They ship as
+  working *demo* stubs (pad-state, launch-site GPS fix) so the board transmits on
+  the bench immediately. **Keep the units exactly as `PROTOCOL.md`** (dm/s, deg×1e7,
+  V×10, tilt 0..180). Do not touch framing/CRC/TX below the seam.
+- **Adding a peripheral** is one `SUBSYS(...)` line in `g_subsys[]` plus a
+  `HEALTH_*` bit in `packet.py` + `TelemPacket.h` + `protocol.ts`.
+- **A failing `read()` returns false** — it does not retry internally and does not
+  abort. Returning false is how a peripheral reports illness; `lib/Subsystem`
+  decides when that becomes "dead".
+- **Boot logs every peripheral by name**, so "which one failed to initialise?" is
+  answered on the serial console before you even look at the dashboard.
 - **Sequence & loss.** The TX loop owns `seq` and increments it **only on a successful
   write**, so the ground station's loss counter reflects RF loss, not onboard hiccups.
 - **Never blind-write.** If AUX isn't HIGH within 200 ms the frame is *dropped* (seq
@@ -132,9 +168,15 @@ is a **must-test-before-flight** item (`GROUND_STATION_PLAN.md §8`). Planned be
    shielding + a ferrite bead on the E32 supply, move the GPS antenna away from the E32
    and its feedline, and/or reduce TX power or rate. Re-run steps 1–3 after each change.
 
-The demo `read_sensors()` reports `gps_fix`/`gps_sats` in the live downlink, so this
-test can be watched **on the dashboard's link panel in real time** — flip the radio on
-and see whether the fix indicator drops.
+The demo `gps_read()` reports `gps_fix`/`gps_sats` in the live downlink, so this test
+can be watched **on the dashboard's link panel in real time** — flip the radio on and
+see whether the fix indicator drops.
+
+> Note the distinction the health byte draws here: RFI desense makes a *healthy*
+> receiver report `gps_fix = 0`. That is `HEALTH_GPS = 1` with a bad fix — not a dead
+> GPS. Only stop returning true from `gps_read()` when the receiver itself goes quiet;
+> conflating the two would send you hunting a wiring fault when the real problem is
+> shielding.
 
 ## Layout
 
@@ -143,9 +185,11 @@ firmware/
 ├── platformio.ini         two build envs (bridge, onboard_tx)
 ├── lib/
 │   ├── E32/               AUX-disciplined E32 driver (shared)
+│   ├── Subsystem/         per-peripheral fault isolation + I2C bus recovery
 │   └── TelemPacket/       C mirror of PROTOCOL.md (header-only)
 ├── test/
-│   └── packet_check.cpp   host proof: C frame == packet.py frame
+│   ├── packet_check.cpp   host proof: C frame == packet.py frame
+│   └── subsystem_check.cpp host proof: one dead sensor != dead vehicle
 └── src/
     ├── bridge.cpp         Target 1: raw passthrough + RX LED
     └── onboard_tx.cpp     Target 2: 4 Hz telemetry TX + sensor seam

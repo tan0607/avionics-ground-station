@@ -3,6 +3,7 @@
 .pioenvs/
 .piolibdeps/
 
-# host-side packet verification binary (see lib/TelemPacket/)
+# host-side verification binaries (see firmware/README.md)
 test/packet_check
+test/subsystem_check
 *.o
