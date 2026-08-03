@@ -20,6 +20,7 @@ import { KpiRow } from "@/components/KpiRow"
 import { AltitudeChart } from "@/components/AltitudeChart"
 import { SensorChart } from "@/components/SensorChart"
 import { GoNoGo } from "@/components/GoNoGo"
+import { SubsystemHealth } from "@/components/SubsystemHealth"
 import { FlightTimeline } from "@/components/FlightTimeline"
 import { FlightMap } from "@/components/FlightMap"
 import { LogView } from "@/components/LogView"
@@ -96,6 +97,7 @@ function App() {
               {/* safety + phase */}
               <div className="flex min-h-0 flex-col gap-2">
                 <GoNoGo frame={telemetry.frame} />
+                <SubsystemHealth frame={telemetry.frame} />
                 <FlightTimeline state={telemetry.frame?.flightState ?? null} />
               </div>
             </main>

@@ -43,6 +43,40 @@ export const GpsFix = {
 } as const
 export type GpsFix = (typeof GpsFix)[keyof typeof GpsFix]
 
+/**
+ * Per-peripheral health (packet.py HEALTH_*). Bit set = that device initialised
+ * and is currently responding. The vehicle keeps flying and transmitting with
+ * any of these clear — a dead peripheral greys out ONE row, it is never a
+ * blanket "AV FAILED". See firmware/lib/Subsystem.
+ */
+export const Health = {
+  BARO: 1 << 0,
+  IMU: 1 << 1,
+  GPS: 1 << 2,
+  SD: 1 << 3,
+  PYRO: 1 << 4,
+  VBAT: 1 << 5,
+} as const
+export type Health = (typeof Health)[keyof typeof Health]
+
+/** All peripherals nominal — what `health` reads on a clean boot. */
+export const HEALTH_ALL_OK =
+  Health.BARO | Health.IMU | Health.GPS | Health.SD | Health.PYRO | Health.VBAT
+
+/**
+ * Display roster, in panel order. `key` matches the backend's `hw_*` wire field
+ * and `field` names the telemetry the peripheral feeds — the UI greys that
+ * readout out when the peripheral is down.
+ */
+export const SUBSYSTEMS = [
+  { mask: Health.BARO, name: "BARO", key: "hw_baro", feeds: "Altitude" },
+  { mask: Health.IMU, name: "IMU", key: "hw_imu", feeds: "Tilt" },
+  { mask: Health.GPS, name: "GPS", key: "hw_gps", feeds: "Position" },
+  { mask: Health.SD, name: "SD", key: "hw_sd", feeds: "Onboard log" },
+  { mask: Health.PYRO, name: "PYRO", key: "hw_pyro", feeds: "Continuity" },
+  { mask: Health.VBAT, name: "VBAT", key: "hw_vbat", feeds: "Battery" },
+] as const
+
 /** Nominal telemetry rate — 4 Hz (see PROTOCOL.md). Drives the mock + link math. */
 export const PACKET_HZ = 4
 export const PACKET_INTERVAL_MS = 1000 / PACKET_HZ
@@ -78,6 +112,14 @@ export interface TelemetryFrame {
   pyroFired: boolean
   sdOk: boolean
   armed: boolean
+  /** Raw HEALTH_* bitfield — one bit per peripheral. */
+  health: number
+  /**
+   * False when the frame carried no health byte at all (pre-health firmware, or
+   * an old raw.log replay). The panel then shows every row as unknown rather
+   * than inventing six green lights or six red alarms.
+   */
+  healthKnown: boolean
 }
 
 /**
@@ -106,6 +148,12 @@ export interface WireFrame {
   pyro_fired: boolean | number
   sd_ok: boolean | number
   armed: boolean | number
+  /**
+   * Peripheral health byte. Optional: a pre-health firmware build (or a replay
+   * of an old raw.log) simply omits it. Absent is treated as "unknown", NOT as
+   * "everything failed" — see coerceHealth.
+   */
+  health?: number
 }
 
 const NAME_TO_STATE: Record<string, FlightState> = Object.fromEntries(
@@ -151,7 +199,23 @@ export function normalizeFrame(w: WireFrame): TelemetryFrame {
     pyroFired: coerceBool(w.pyro_fired),
     sdOk: coerceBool(w.sd_ok),
     armed: coerceBool(w.armed),
+    health: typeof w.health === "number" ? w.health : HEALTH_ALL_OK,
+    healthKnown: typeof w.health === "number",
   }
+}
+
+/** True if the peripheral is initialised and responding. */
+export function isHealthy(frame: TelemetryFrame, mask: number): boolean {
+  return (frame.health & mask) === mask
+}
+
+/**
+ * Names of every peripheral currently down — the thing to show the operator
+ * instead of a single failure boolean. Empty array = all nominal.
+ */
+export function failedSubsystems(frame: TelemetryFrame | null): string[] {
+  if (!frame || !frame.healthKnown) return []
+  return SUBSYSTEMS.filter((s) => !(frame.health & s.mask)).map((s) => s.name)
 }
 
 /** True once the vehicle has left the pad (T+ clock runs from the first BOOST). */

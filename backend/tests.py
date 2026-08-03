@@ -62,6 +62,8 @@ def test_wire_contract() -> None:
         "host_time", "seq", "flight_state", "onboard_ms", "baro_alt_m", "vspeed_ms",
         "gps_lat", "gps_lon", "gps_alt_m", "gps_sats", "gps_fix", "tilt_deg",
         "vbat_v", "continuity", "pyro_fired", "sd_ok", "armed",
+        "health", "failed_subsystems",
+        "hw_baro", "hw_imu", "hw_gps", "hw_sd", "hw_pyro", "hw_vbat",
     }
     t = packet.Telemetry(
         seq=7, flight_state=FlightState.BOOST, onboard_ms=5000,
@@ -69,6 +71,7 @@ def test_wire_contract() -> None:
         gps_lat=32_437_000, gps_lon=1_017_061_000, gps_alt_m=1300,
         gps_sats=11, gps_fix=GpsFix.FIX_3D, tilt_deg=4, vbat_dv=79,
         flags=FLAG_CONTINUITY | FLAG_ARMED,
+        health=packet.HEALTH_ALL_OK,
     )
     w = telemetry_to_wire(t, host_time_ms=1_700_000_000_000)
     assert set(w) == set(WIRE_KEYS)
@@ -80,6 +83,18 @@ def test_wire_contract() -> None:
     assert abs(w["gps_lon"] - 101.7061) < 1e-6
     assert w["continuity"] is True and w["armed"] is True
     assert w["pyro_fired"] is False and w["sd_ok"] is False
+    # All peripherals nominal -> every hw_* true, nothing named as failed.
+    assert w["failed_subsystems"] == [] and w["health"] == packet.HEALTH_ALL_OK
+    assert all(w[col] is True for _, _, col in packet.SUBSYSTEMS)
+
+    # A dead barometer must degrade exactly ONE row and NAME it -- the whole
+    # point of the health byte is that the operator never sees "AV FAILED".
+    t.health = packet.HEALTH_ALL_OK & ~packet.HEALTH_BARO
+    w = telemetry_to_wire(t, host_time_ms=1_700_000_000_000)
+    assert w["failed_subsystems"] == ["BARO"], w["failed_subsystems"]
+    assert w["hw_baro"] is False
+    assert all(w[col] is True for mask, _, col in packet.SUBSYSTEMS
+               if mask != packet.HEALTH_BARO)
 
 
 def test_session_writes_and_raw_framing() -> None:

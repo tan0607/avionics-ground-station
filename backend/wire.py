@@ -24,6 +24,8 @@ WIRE_KEYS = (
     "host_time", "seq", "flight_state", "onboard_ms", "baro_alt_m", "vspeed_ms",
     "gps_lat", "gps_lon", "gps_alt_m", "gps_sats", "gps_fix", "tilt_deg",
     "vbat_v", "continuity", "pyro_fired", "sd_ok", "armed",
+    "health", "failed_subsystems",
+    *(col for _, _, col in packet.SUBSYSTEMS),
 )
 
 
@@ -52,4 +54,10 @@ def telemetry_to_wire(t: packet.Telemetry, host_time_ms: int) -> dict:
         "pyro_fired": t.flag(FLAG_PYRO_FIRED),
         "sd_ok": t.flag(FLAG_SD_OK),
         "armed": t.flag(FLAG_ARMED),
+        # Per-peripheral health. Shipped as the raw byte AND as named booleans +
+        # a list of what's down, so the UI can render "BARO LOST" instead of a
+        # blanket vehicle failure. Empty list = all nominal.
+        "health": t.health,
+        "failed_subsystems": t.failed_subsystems(),
+        **{col: t.healthy(mask) for mask, _, col in packet.SUBSYSTEMS},
     }

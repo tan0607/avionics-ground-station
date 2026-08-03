@@ -11,6 +11,7 @@
  */
 import {
   FlightState,
+  HEALTH_ALL_OK,
   LAUNCH_SITE,
   PACKET_INTERVAL_MS,
   type WireFrame,
@@ -202,6 +203,10 @@ export class MockFlightSim {
         sdOk: true,
         armed: this.phase !== FlightState.LANDED,
       }),
+      // The mock flies a healthy vehicle: peripheral faults are a hardware
+      // condition, not something to fake into the demo stream. To exercise the
+      // health panel, clear a bit here (e.g. `HEALTH_ALL_OK & ~Health.BARO`).
+      health: HEALTH_ALL_OK,
     }
   }
 }
