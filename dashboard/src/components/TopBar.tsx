@@ -40,9 +40,12 @@ function SourceTag({ source }: { source: TelemetrySource }) {
 
 function Segment({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-baseline gap-2 px-4">
-      <span className="text-[0.625rem] uppercase tracking-[0.16em] text-ink-mute">{label}</span>
-      {children}
+    <div className="flex items-center px-4">
+      {/* center the group vertically in the bar, keep label + value on one baseline */}
+      <span className="flex items-baseline gap-2">
+        <span className="text-[0.625rem] uppercase tracking-[0.16em] text-ink-mute">{label}</span>
+        {children}
+      </span>
     </div>
   )
 }
