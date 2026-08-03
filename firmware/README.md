@@ -12,6 +12,12 @@ PlatformIO project:
 > are the source of truth. The firmware never redefines it — `lib/TelemPacket` is a
 > **byte-for-byte C mirror**, verified against a Python-generated reference frame.
 
+There is also a third, non-PlatformIO target: **[`arduino/E32Receiver`](arduino/)** —
+a standalone receiver for the **Arduino IDE** that decodes and prints telemetry to the
+Serial Monitor with no laptop backend. It runs on a Uno/Nano/Mega as well as an ESP32,
+so you can prove the RF link works on the bench before the ground station is wired up.
+See [`arduino/README.md`](arduino/README.md).
+
 ## Why an ESP32 devkit for the bridge?
 
 Per `GROUND_STATION_PLAN.md §2`: the E32 is a **3.3 V** part, so a 5 V Arduino's TX line
