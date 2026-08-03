@@ -8,8 +8,9 @@ node_modules/
 dashboard/node_modules/
 dashboard/dist/
 
-# Claude Code machine-local settings (has absolute hook paths)
+# Agent machine-local settings (have absolute hook paths)
 .claude/settings.local.json
+.codex/hooks.json
 
 # Offline map tiles (large). Ignore ad-hoc extracts by default...
 *.pmtiles
