@@ -47,49 +47,29 @@ Four boards, two settings, and they pair up:
 ### One ground station for both rockets
 
 You do not need two receiver boxes. The ground station's channel is switchable
-at runtime from the serial monitor, so one box covers a whole launch day:
+at runtime — from the dashboard, or from a serial monitor — so one box covers a
+whole launch day:
 
 | control | does |
 |---|---|
-| **BOOT button** | next channel (A → B → A) — no laptop needed |
-| `A` on serial | listen to rocket A (433.3 MHz) |
-| `B` on serial | listen to rocket B (434.1 MHz) |
-| `?` on serial | print the current channel, packet count and last RSSI/SNR |
-
-The dashboard can drive this too — **Set → Radio Channel** has the same A/B
-switch, so you can retune from the laptop without a serial monitor. It sends the
-same key, and the channel it displays comes from the box's own announcement
-rather than from what was asked for, so a command that does not land shows as
-the channel simply not changing. Needs a `--serial` session; on `--fake` or
-`--replay` the card says so and the buttons are dead.
-
-The **BOOT button is the DevKit's own** — nothing to wire. The onboard LED
-answers back: **one blink = A, two blinks = B**, so you can switch and confirm
-with the laptop closed. Between switches the LED pulses on every packet
-received, which is a link-alive indicator you can read across a field.
-
-Holding BOOT *through a reset* still drops the board into the bootloader — that
-is the flashing gesture and it is unchanged. Only presses while running switch
-channels.
-
-**The channel survives a reboot** (stored in NVS). That is not a nicety:
-attaching the backend *resets this board* on purpose (`sources.py::_reset_board`,
-for a known state and a boot banner). Without persistence, every reconnect would
-drag the box back to the compile-time default — you switch to B, the laptop
-reconnects, and you are on A again with nothing saying so. `VEHICLE` in the
-sketch is therefore only the **factory** default: first boot, or after a flash
-erase. The boot banner says which you got:
-
-```
-RX ready - vehicle B @ 434.100 MHz  (restored from last switch; rocket must match)
-RX ready - vehicle A @ 433.300 MHz  (compile-time default; rocket must match)
-```
+| **Set → Radio Channel** in the dashboard | A/B switch from the laptop — the usual way |
+| `A` on the serial monitor | listen to rocket A (433.3 MHz) |
+| `B` on the serial monitor | listen to rocket B (434.1 MHz) |
+| `?` on the serial monitor | print the current channel, packet count and last RSSI/SNR |
 
 Both airframes can sit powered on the pad at once — they are on separate
 channels, so they do not collide and neither one interferes with the other. Fly
-A, then press `B` and fly B. No reflash, no reboot, and the backend's serial
-connection survives the switch. `VEHICLE` in the sketch is only the power-on
-default; set it to whichever rocket flies first.
+A, switch, fly B. No reflash, no reboot, and the backend's serial connection
+survives the switch. `VEHICLE` in the sketch is only the power-on default.
+
+The dashboard shows the channel the box **reports**, not the one it was asked
+for, so a command that does not land reads as the channel simply not changing.
+It stays blank until the receiver has announced itself.
+
+The onboard LED (GPIO2) pulses on every packet received. That is a link-alive
+indicator you can read across a field with the laptop shut — lit and flickering
+means frames are arriving. It says nothing about which channel; the console and
+the boot banner are the authorities there.
 
 The switch prints a marker into the stream, so `raw.log` records when it
 happened:
@@ -105,9 +85,22 @@ jump *under* 1000 is counted as lost packets, and which one you get depends on
 the order you powered the two rockets up. Starting a fresh session sidesteps the
 question entirely.
 
-You only need the second box if you want to watch both rockets at the same time.
-One SX1278 tunes one frequency at a time; there is no scan mode that would not
-drop packets while it looked away.
+You only need a second receiver box if you want to watch both rockets at the
+same time. One SX1278 tunes one frequency at a time; there is no scan mode that
+would not drop packets while it looked away.
+
+**The channel survives a reboot** (stored in NVS). That is not a nicety:
+attaching the backend *resets this board* on purpose (`sources.py::_reset_board`,
+for a known state and a boot banner). Without persistence, every reconnect would
+drag the box back to the compile-time default — you switch to B, the laptop
+reconnects, and you are on A again with nothing saying so. `VEHICLE` in the
+sketch is therefore only the **factory** default: first boot, or after a flash
+erase. The boot banner says which you got:
+
+```
+RX ready - vehicle B @ 434.100 MHz  (restored from last switch; rocket must match)
+RX ready - vehicle A @ 433.300 MHz  (compile-time default; rocket must match)
+```
 
 ### Why two rockets cannot share a channel
 

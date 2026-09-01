@@ -105,24 +105,16 @@ static int gChannel = VEHICLE;    // index into CHANNELS
 #define LORA_RST   14
 #define LORA_DIO0  26
 
-// The DevKit's own BOOT button and LED -- no extra hardware to wire. BOOT sits
-// on GPIO0 with a pull-up, so it reads HIGH until pressed.
+// Link-alive LED. Pulses on every packet received, which is the one thing you
+// can read from across a field with the laptop shut: lit and flickering means
+// frames are arriving, dark means they are not. It says nothing about WHICH
+// channel -- the console and the boot banner are the authorities on that.
 //
-// GPIO0 is safe to poll here even with the backend attached. It is half of the
-// auto-reset circuit (RTS->EN, DTR->GPIO0), but backend/sources.py's
-// _reset_board() sets dtr=False and leaves it there for the life of the
-// connection, so GPIO0 is released and floats up to its pull-up. Only holding
-// BOOT down THROUGH a reset does anything special -- that is the flashing
-// gesture, and it drops the board into the bootloader instead of the sketch.
-//
-// PIN_LED is GPIO2 on most classic DevKits. If yours has no LED there, nothing
-// breaks: the pin just toggles with nothing attached.
-#define PIN_BTN     0
+// GPIO2 on most classic DevKits. If yours has no LED there, nothing breaks: the
+// pin just toggles with nothing attached.
 #define PIN_LED     2
 
-#define BTN_DEBOUNCE_MS   50    // mechanical bounce; also rejects noise pickup
-#define LED_PULSE_MS      40    // packet-RX blink
-#define LED_ID_BLINK_MS  150    // channel-identify blink on switch
+#define LED_PULSE_MS  40        // packet-RX blink
 
 
 // -----------------------------------------------------
@@ -216,19 +208,6 @@ static void applyChannel(int idx, bool announce) {
   // with the mode change; do not print its remains.
   gotPkt = false;
 
-  // Blink the channel number back at the operator: one blink for A, two for B.
-  // The whole point of the button is not needing the laptop, so the confirmation
-  // cannot live only in a serial line nobody is watching. Blocking is fine here
-  // -- we just retuned, there is nothing in flight to miss, and a switch is a
-  // deliberate act between flights.
-  if (announce) {
-    for (int i = 0; i <= idx; i++) {
-      digitalWrite(PIN_LED, HIGH); delay(LED_ID_BLINK_MS);
-      digitalWrite(PIN_LED, LOW);  delay(LED_ID_BLINK_MS);
-    }
-    gLedOffAt = 0;
-  }
-
   if (announce) {
     // Marker into the stream, so raw.log records WHEN the
     // operator switched. Deliberately carries no "MRCC"
@@ -262,46 +241,7 @@ static void printStatus() {
 
 
 static void printHelp() {
-  Serial.println("### GS keys:  A = rocket A   B = rocket B   ? = status"
-                 "   |  BOOT button = next channel ###");
-}
-
-
-// =====================================================
-// BUTTON - the same switch, without a laptop
-//
-// Press BOOT to move to the next channel (A -> B -> A).
-// Toggling rather than "A here, B there" is what one
-// button buys, and with only two rockets a toggle is
-// unambiguous; the LED blinks the answer back and '?'
-// still prints it.
-//
-// Edge-triggered, not level: acting on the LOW level
-// would retune continuously for as long as a finger
-// rested on the button.
-// =====================================================
-
-static void handleButton() {
-  static bool          lastStable = HIGH;   // released; BOOT is pulled up
-  static bool          lastRead   = HIGH;
-  static unsigned long lastChange = 0;
-
-  bool now = digitalRead(PIN_BTN);
-
-  if (now != lastRead) {                    // still bouncing, restart the timer
-    lastRead   = now;
-    lastChange = millis();
-    return;
-  }
-
-  if (millis() - lastChange < BTN_DEBOUNCE_MS) return;
-
-  if (now != lastStable) {
-    lastStable = now;
-    if (now == LOW) {                       // falling edge = pressed
-      applyChannel((gChannel + 1) % N_CHANNELS, true);
-    }
-  }
+  Serial.println("### GS keys:  A = rocket A   B = rocket B   ? = status ###");
 }
 
 
@@ -324,7 +264,6 @@ static void handleSerial() {
 void setup() {
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, LOW);
-  pinMode(PIN_BTN, INPUT_PULLUP);
 
   Serial.begin(115200);
   delay(2000);
@@ -374,7 +313,6 @@ void setup() {
 
 void loop() {
   handleSerial();
-  handleButton();
 
   if (gotPkt) {
     gPktCount++;
