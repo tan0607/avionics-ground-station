@@ -5,3 +5,13 @@ build/
 *.elf
 *.bin
 *.map
+
+# tools/ output. All of it regenerates with `tools/make_report_figures.sh`:
+# the replay binary is built from replay.cpp against the flight firmware's own
+# Filters.cpp, the demo CSVs come from make_demo_log.py, and figures/ from
+# plot_filters.py. ~4 MB of derived data with a one-command recipe -- not history.
+tools/replay
+tools/demo_raw.csv
+tools/demo_filtered.csv
+tools/figures/
+*.zip

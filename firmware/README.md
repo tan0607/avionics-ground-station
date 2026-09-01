@@ -6,6 +6,10 @@ Two Arduino sketches, two boards, one radio link.
 |---|---|---|---|
 | `MRCC_FlightComputer/` | ESP32-**S3** | `esp32:esp32:esp32s3` | fly the rocket: sensors, filters, flight state, pyro, SD log, and a 2 Hz MRCC downlink |
 | `MRCC_GroundStation/` | classic **ESP32** | `esp32:esp32:esp32` | receive that downlink and print it to USB for the backend |
+| `SD_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only SD card fault finder — no radio, no sensors. Flash it when the card won't mount, then drive it from the serial monitor |
+
+Plus `tools/` — host-side, never compiled into the flight build. See
+[Filter figures](#filter-figures-tools).
 
 The ground station prints one line per frame:
 
@@ -114,6 +118,32 @@ Add `--upload -p <port>` to flash. Find the port with `arduino-cli board list`.
 
 Libraries: `LoRa` (sandeepmistry), plus the flight computer's sensor stack
 (ICM-20948, BMP280, TinyGPS++). Install once with `arduino-cli lib install`.
+
+---
+
+## Filter figures (`tools/`)
+
+Host-side only. `tools/replay.cpp` **links `MRCC_FlightComputer/src/Filters.cpp`
+directly**, so the report's before/after graphs are produced by the same C++ that
+flies — change a cutoff in `Config.h`, re-run, and the figures move with the
+firmware. There is no second implementation to drift.
+
+```bash
+cd firmware/tools && ./make_report_figures.sh
+```
+
+That synthesises a flight with known true attitude, runs it through the flight
+filter code, and writes `figures/`. Pass a `FLIGHTnnn.CSV` off the SD card to
+plot a real one instead. `tools/README.md` has the figure list and the one real
+caveat (the card logs at 10 Hz, so the spectrum figure is only meaningful on the
+replay path).
+
+`tools/` needs `g++` and Python with numpy/scipy/matplotlib. Its output —
+`replay`, the demo CSVs, `figures/` — is gitignored: ~4 MB of derived data that
+the one command above regenerates.
+
+**`tools/` must stay a sibling of `MRCC_FlightComputer/`.** The build script
+reaches the firmware through `../MRCC_FlightComputer/src`.
 
 ---
 
