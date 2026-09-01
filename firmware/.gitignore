@@ -1,16 +1,7 @@
-# PlatformIO build output + local caches
-.pio/
-.pioenvs/
-.piolibdeps/
-
-# PlatformIO regenerates these from platformio.ini and they are ~460 absolute
-# paths into this machine's ~/.platformio -- useless on any other checkout.
-# Recreate with: pio project init --ide vscode
-.vscode/c_cpp_properties.json
-.vscode/launch.json
-# (.vscode/extensions.json IS committed -- it recommends the PlatformIO extension.)
-
-# host-side verification binaries (see firmware/README.md)
-test/packet_check
-test/subsystem_check
-*.o
+# arduino-cli / Arduino IDE build output. Written next to the sketch when you
+# compile without --output-dir, and it is ~2 MB of regenerable binaries per
+# sketch per board.
+build/
+*.elf
+*.bin
+*.map

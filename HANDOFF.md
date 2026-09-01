@@ -4,6 +4,14 @@
 > window opened on this project should read **this file first**, then the two design docs it points to.
 > It captures every decision, the current status, the per-window job split, and copy-paste opening prompts.
 > Last updated: 2026-07-05.
+>
+> ⚠️ **This file predates the switch to the MRCC link and is stale in two ways.**
+> The radio is a bare SX1278 on SPI, not an EBYTE E32 — every mention of
+> M0/M1/AUX below is history. And the downlink is ASCII MRCC text at 2 Hz, not
+> the 32-byte binary frame described in §5; `shared/protocol/mrcc.py` decodes it
+> and maps it onto `packet.Telemetry`, which survives as the project's internal
+> data shape rather than as a wire format. For what actually flies and how to
+> flash it, read **`firmware/README.md`** — it is current.
 
 ## 0. TL;DR
 
@@ -60,7 +68,7 @@ shared/fake_telemetry.py      full-flight simulator                 ← ✅ done
 backend/                      FastAPI serial→CSV→WebSocket           ← Window 1
 dashboard/                    Vite/React/TS + uPlot + shadcn         ← Window 2 (+ map from W3)
 notebooks/                    PLDR Jupyter template                  ← Window 4
-firmware/                     ESP32 bridge + onboard TX              ← Window 5
+firmware/                     flight computer + ground station sketches
 flights/                      runtime session data (raw.log, csv)
 ```
 

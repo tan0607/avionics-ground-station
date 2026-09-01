@@ -1,8 +1,18 @@
 # Telemetry Packet Protocol
 
-> Authoritative wire spec for the rocket ⇄ ground-station link.
-> `packet.py` is the source of truth; this document mirrors it in human-readable form.
-> **Firmware must match this byte-for-byte.** Little-endian throughout.
+> **NOT CURRENTLY FLOWN.** The live downlink is ASCII MRCC text, decoded by
+> `mrcc.py`; the firmware that speaks this binary format was removed from
+> `firmware/` (see that README). This spec survives because `packet.Telemetry`
+> is still the project's internal data shape — `mrcc.py` maps MRCC *onto* it, so
+> loss tracking, `telemetry.csv`, the WebSocket and the dashboard all keep
+> consuming one shape. Read the field table as the definition of that shape.
+>
+> The framing, CRC and C struct below describe a wire format nothing on either
+> end currently produces or parses. They are kept for the day the binary link is
+> revived, not as a description of today's hardware.
+>
+> `packet.py` is the source of truth; this document mirrors it in human-readable
+> form. Little-endian throughout.
 
 ## Framing
 
@@ -21,7 +31,11 @@ Every packet is a fixed **32 bytes**:
 - **BODY** = 28 bytes of fields (table below).
 - **CRC16** = CRC-16/CCITT-FALSE over the 28 BODY bytes only (offsets 2..29), stored little-endian.
 
-Rate: 4 Hz nominal (~128 B/s). E32 air-rate 2.4 kbps, 9600 baud UART.
+Rate: 4 Hz nominal (~128 B/s), on a bare SX1278 at SF7 / BW 125 kHz / CR 4-5
+(~72 ms on air per frame) — the settings the removed binary firmware used. The
+link that actually flies runs at BW 250 kHz with hardware CRC on and carries
+MRCC text at 2 Hz; see `firmware/README.md` for the current parameters. Either
+way the radio is a transport detail and does not affect the bytes below.
 
 ## Field table (BODY — offsets are relative to frame start)
 
@@ -93,8 +107,9 @@ Bit **clear** = it is not, and every field it feeds is untrustworthy.
 ground station, never the whole vehicle. The flight computer does not abort boot
 when a sensor's init fails and does not stall its loop when one dies in flight —
 it clears the bit, keeps transmitting at 4 Hz, and lets the operator see exactly
-what is down. Enforced by `firmware/lib/Subsystem`, proven by
-`firmware/test/subsystem_check.cpp`.
+what is down. The removed binary firmware enforced this in `lib/Subsystem`; the
+flight computer that flies today reports the same idea through MRCC's `SD=`/`BA=`
+flags, which `mrcc.py:health_from_fields` folds back into this byte.
 
 **Init failure vs in-flight failure** is read off the *first* frame of a session:
 a bit clear from the very first packet never came up at all; a bit that goes
@@ -128,7 +143,10 @@ uint16_t crc16_ccitt(const uint8_t *data, size_t len) {
 }
 ```
 
-## C struct (firmware)
+## C struct (reference)
+
+> Nothing in `firmware/` mirrors this today; the C twin was removed with the
+> binary firmware. Kept as the reference implementation for whoever revives it.
 
 ESP32 is little-endian, so a packed struct maps straight onto the wire BODY:
 

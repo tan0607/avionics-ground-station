@@ -2,33 +2,35 @@
  * SubsystemHealth — per-peripheral status, one row each.
  *
  * This panel is the ground-station half of the fault-isolation contract: the
- * vehicle reports a health bit per peripheral (firmware/lib/Subsystem), so the
+ * vehicle reports a health bit per peripheral, so the
  * operator sees "BARO LOST — altitude stale" and not a single useless
  * "AV FAILED". Everything else on the vehicle is still flying and still
  * transmitting; only the named row is down.
  *
  * Rows are triple-encoded (position, color, word) like GoNoGo, per PRODUCT.md §6.
  */
+import { SUBSYSTEMS, isKnown, type TelemetryFrame } from "@/lib/protocol"
 import { Card } from "@/components/ui/card"
-import { SUBSYSTEMS, type TelemetryFrame } from "@/lib/protocol"
 import { StatusLight, type LightState } from "./StatusLight"
 
 function rowState(frame: TelemetryFrame | null, mask: number): LightState {
-  // No link, or a firmware build that predates the health byte: unknown, not
-  // failed. Six red lights for a missing field would be a false alarm.
-  if (!frame || !frame.healthKnown) return "idle"
-  return frame.health & mask ? "go" : "nogo"
+  // No link, a firmware build that predates the health byte, or a downlink that
+  // simply doesn't carry this peripheral: unknown, not failed. A red light for a
+  // field nobody reported would be a false alarm, and the operator has no way to
+  // tell a fabricated alarm from a real one.
+  if (!isKnown(frame, mask)) return "idle"
+  return frame!.health & mask ? "go" : "nogo"
 }
 
 function rowDetail(frame: TelemetryFrame | null, mask: number): string {
-  if (!frame || !frame.healthKnown) return "—"
-  return frame.health & mask ? "OK" : "LOST"
+  if (!isKnown(frame, mask)) return "—"
+  return frame!.health & mask ? "OK" : "LOST"
 }
 
 export function SubsystemHealth({ frame }: { frame: TelemetryFrame | null }) {
-  const down = frame?.healthKnown
-    ? SUBSYSTEMS.filter((s) => !(frame.health & s.mask))
-    : []
+  const down = SUBSYSTEMS.filter(
+    (s) => isKnown(frame, s.mask) && !(frame!.health & s.mask),
+  )
 
   return (
     <Card className="shrink-0">

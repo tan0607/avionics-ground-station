@@ -1,43 +1,33 @@
 {
-    // Multi-root workspace. Open THIS file (File > Open Workspace from File...),
-    // not the plain folder.
+    // Open THIS file (File > Open Workspace from File...), not the plain folder.
     //
-    // Why two roots for one repo: the PlatformIO extension only activates, and only
-    // applies its generated IntelliSense config, when platformio.ini sits at a
-    // workspace root. Opening the repo root alone leaves firmware/ unconfigured and
-    // every #include <Arduino.h> red. Listing firmware/ as its own root gives it the
-    // real xtensa toolchain, the build/upload buttons, and the serial monitor, while
-    // the repo root still shows backend/, dashboard/, shared/, and the docs.
+    // Single root now. This used to carry a second root for firmware/, because the
+    // PlatformIO extension only activates when platformio.ini sits at a workspace
+    // root. That PlatformIO project is gone -- firmware/ is two Arduino sketches
+    // built with arduino-cli (see firmware/README.md), which needs no extension and
+    // no root of its own.
     "folders": [
         {
             "name": "avionics-ground-station",
             "path": "."
-        },
-        {
-            "name": "firmware (PlatformIO)",
-            "path": "firmware"
         }
     ],
     "settings": {
-        // The generated configs are the authority; don't let cpptools guess.
-        "C_Cpp.default.configurationProvider": "platformio.platformio-ide",
         "files.associations": {
             "*.ino": "cpp"
         },
-        // .pio holds hundreds of MB of toolchain + build output. Indexing it makes
-        // search and file-watching useless.
-        "files.exclude": {
-            "**/.pio": true
-        },
+        // arduino-cli writes build/ next to a sketch when you compile without
+        // --output-dir: a couple of MB of regenerable binaries per sketch, per
+        // board. Gitignored (firmware/.gitignore); excluded here so it does not
+        // pollute search results either.
         "search.exclude": {
-            "**/.pio": true,
+            "**/build": true,
             "**/node_modules": true,
             "**/dist": true
         }
     },
     "extensions": {
         "recommendations": [
-            "platformio.platformio-ide",
             "ms-vscode.cpptools"
         ]
     }
