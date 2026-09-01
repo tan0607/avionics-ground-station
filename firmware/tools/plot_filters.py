@@ -545,10 +545,11 @@ def main():
 
     # ---- the same numbers as text, for pasting into a report ----
     q = d[(d["T"] >= quiet[0]) & (d["T"] <= quiet[1])]
-    print("\nnoise on the pad (sigma raw -> sigma filtered):")
+    print(f"\nbroadband noise on the pad, {quiet[0]:.1f}-{quiet[1]:.1f} s")
+    print("(robust MAD sigma, so a stray spike cannot dominate it)")
     for raw, filt in [("AX", "FAX"), ("AY", "FAY"), ("AZ", "FAZ"),
                       ("GX", "FGX"), ("GY", "FGY"), ("GZ", "FGZ")]:
-        a, b = float(q[raw].std()), float(q[filt].std())
+        a, b = robust_sigma(q[raw]), robust_sigma(q[filt])
         print(f"  {raw:>3} {a:8.3f} -> {b:7.3f}   {100 * (1 - b / a):5.1f}% lower")
 
     if rows:

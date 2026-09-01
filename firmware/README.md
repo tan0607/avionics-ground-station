@@ -49,11 +49,34 @@ Four boards, two settings, and they pair up:
 You do not need two receiver boxes. The ground station's channel is switchable
 at runtime from the serial monitor, so one box covers a whole launch day:
 
-| key | does |
+| control | does |
 |---|---|
-| `A` | listen to rocket A (433.3 MHz) |
-| `B` | listen to rocket B (434.1 MHz) |
-| `?` | print the current channel, packet count and last RSSI/SNR |
+| **BOOT button** | next channel (A → B → A) — no laptop needed |
+| `A` on serial | listen to rocket A (433.3 MHz) |
+| `B` on serial | listen to rocket B (434.1 MHz) |
+| `?` on serial | print the current channel, packet count and last RSSI/SNR |
+
+The **BOOT button is the DevKit's own** — nothing to wire. The onboard LED
+answers back: **one blink = A, two blinks = B**, so you can switch and confirm
+with the laptop closed. Between switches the LED pulses on every packet
+received, which is a link-alive indicator you can read across a field.
+
+Holding BOOT *through a reset* still drops the board into the bootloader — that
+is the flashing gesture and it is unchanged. Only presses while running switch
+channels.
+
+**The channel survives a reboot** (stored in NVS). That is not a nicety:
+attaching the backend *resets this board* on purpose (`sources.py::_reset_board`,
+for a known state and a boot banner). Without persistence, every reconnect would
+drag the box back to the compile-time default — you switch to B, the laptop
+reconnects, and you are on A again with nothing saying so. `VEHICLE` in the
+sketch is therefore only the **factory** default: first boot, or after a flash
+erase. The boot banner says which you got:
+
+```
+RX ready - vehicle B @ 434.100 MHz  (restored from last switch; rocket must match)
+RX ready - vehicle A @ 433.300 MHz  (compile-time default; rocket must match)
+```
 
 Both airframes can sit powered on the pad at once — they are on separate
 channels, so they do not collide and neither one interferes with the other. Fly

@@ -26,6 +26,7 @@
 
 #include <SPI.h>
 #include <LoRa.h>
+#include <Preferences.h>
 
 
 // -----------------------------------------------------
@@ -104,6 +105,25 @@ static int gChannel = VEHICLE;    // index into CHANNELS
 #define LORA_RST   14
 #define LORA_DIO0  26
 
+// The DevKit's own BOOT button and LED -- no extra hardware to wire. BOOT sits
+// on GPIO0 with a pull-up, so it reads HIGH until pressed.
+//
+// GPIO0 is safe to poll here even with the backend attached. It is half of the
+// auto-reset circuit (RTS->EN, DTR->GPIO0), but backend/sources.py's
+// _reset_board() sets dtr=False and leaves it there for the life of the
+// connection, so GPIO0 is released and floats up to its pull-up. Only holding
+// BOOT down THROUGH a reset does anything special -- that is the flashing
+// gesture, and it drops the board into the bootloader instead of the sketch.
+//
+// PIN_LED is GPIO2 on most classic DevKits. If yours has no LED there, nothing
+// breaks: the pin just toggles with nothing attached.
+#define PIN_BTN     0
+#define PIN_LED     2
+
+#define BTN_DEBOUNCE_MS   50    // mechanical bounce; also rejects noise pickup
+#define LED_PULSE_MS      40    // packet-RX blink
+#define LED_ID_BLINK_MS  150    // channel-identify blink on switch
+
 
 // -----------------------------------------------------
 // RADIO PARAMETERS
@@ -132,6 +152,25 @@ float   gSnr  = 0;
 // this channel actually have a rocket on it" is the
 // question you are asking when you press either.
 static unsigned long gPktCount = 0;
+
+// LED pulse deadline for packet activity. Non-blocking: a receiver that slept
+// 40 ms per packet would drop the second copy of every frame.
+static unsigned long gLedOffAt = 0;
+
+// The chosen channel outlives a reboot, and that is not a nicety. Attaching the
+// backend RESETS this board -- sources.py::_reset_board() pulses EN on connect,
+// deliberately, to get a known state and a boot banner. Without persistence,
+// every backend reconnect would silently drag the box back to the compile-time
+// default: you switch to rocket B, the laptop reconnects, and you are listening
+// to A again with nothing on screen saying so. That is the exact silent-failure
+// shape this whole channel scheme exists to avoid.
+//
+// So VEHICLE is the FACTORY default -- first boot, or after a flash erase. What
+// the operator last chose wins on every boot after that. NVS is only written
+// when the channel actually changes, which is a few times a launch day.
+static Preferences gPrefs;
+static const char *NVS_NAMESPACE = "mrccgs";
+static const char *NVS_KEY_CH    = "ch";
 
 void onRx(int n) {
   if (n <= 0 || n > 250 || gotPkt) return;   // 上一包还没处理完就跳过
@@ -177,6 +216,19 @@ static void applyChannel(int idx, bool announce) {
   // with the mode change; do not print its remains.
   gotPkt = false;
 
+  // Blink the channel number back at the operator: one blink for A, two for B.
+  // The whole point of the button is not needing the laptop, so the confirmation
+  // cannot live only in a serial line nobody is watching. Blocking is fine here
+  // -- we just retuned, there is nothing in flight to miss, and a switch is a
+  // deliberate act between flights.
+  if (announce) {
+    for (int i = 0; i <= idx; i++) {
+      digitalWrite(PIN_LED, HIGH); delay(LED_ID_BLINK_MS);
+      digitalWrite(PIN_LED, LOW);  delay(LED_ID_BLINK_MS);
+    }
+    gLedOffAt = 0;
+  }
+
   if (announce) {
     // Marker into the stream, so raw.log records WHEN the
     // operator switched. Deliberately carries no "MRCC"
@@ -192,6 +244,10 @@ static void applyChannel(int idx, bool announce) {
     // flight after switching and the numbers stay honest.
     Serial.printf("### GS CHANNEL=%s FREQ=%.3fMHz PREV_PKTS=%lu ###\n",
                   CHANNELS[idx].name, CHANNELS[idx].hz / 1e6, gPktCount);
+
+    // Only on an operator switch, and only on a real change: NVS is flash, and
+    // rewriting it on every boot would wear it for nothing.
+    if (gPrefs.getInt(NVS_KEY_CH, -1) != idx) gPrefs.putInt(NVS_KEY_CH, idx);
   }
   gPktCount = 0;
 }
@@ -206,8 +262,46 @@ static void printStatus() {
 
 
 static void printHelp() {
-  Serial.println("### GS keys:  A = listen to rocket A   B = listen to rocket B"
-                 "   ? = status ###");
+  Serial.println("### GS keys:  A = rocket A   B = rocket B   ? = status"
+                 "   |  BOOT button = next channel ###");
+}
+
+
+// =====================================================
+// BUTTON - the same switch, without a laptop
+//
+// Press BOOT to move to the next channel (A -> B -> A).
+// Toggling rather than "A here, B there" is what one
+// button buys, and with only two rockets a toggle is
+// unambiguous; the LED blinks the answer back and '?'
+// still prints it.
+//
+// Edge-triggered, not level: acting on the LOW level
+// would retune continuously for as long as a finger
+// rested on the button.
+// =====================================================
+
+static void handleButton() {
+  static bool          lastStable = HIGH;   // released; BOOT is pulled up
+  static bool          lastRead   = HIGH;
+  static unsigned long lastChange = 0;
+
+  bool now = digitalRead(PIN_BTN);
+
+  if (now != lastRead) {                    // still bouncing, restart the timer
+    lastRead   = now;
+    lastChange = millis();
+    return;
+  }
+
+  if (millis() - lastChange < BTN_DEBOUNCE_MS) return;
+
+  if (now != lastStable) {
+    lastStable = now;
+    if (now == LOW) {                       // falling edge = pressed
+      applyChannel((gChannel + 1) % N_CHANNELS, true);
+    }
+  }
 }
 
 
@@ -228,9 +322,21 @@ static void handleSerial() {
 
 
 void setup() {
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LOW);
+  pinMode(PIN_BTN, INPUT_PULLUP);
+
   Serial.begin(115200);
   delay(2000);
   Serial.println("\n=== RX BOOT ===");
+
+  // Restore the operator's last choice before the radio comes up, so begin()
+  // opens on the right channel instead of tuning twice.
+  gPrefs.begin(NVS_NAMESPACE, false);
+  int saved = gPrefs.getInt(NVS_KEY_CH, -1);
+  bool restored = (saved >= 0 && saved < N_CHANNELS);
+  if (restored) gChannel = saved;
+
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);   // ← 必须在前面
 
   LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
@@ -257,16 +363,32 @@ void setup() {
   Serial.print(CHANNELS[gChannel].name);
   Serial.print(" @ ");
   Serial.print(CHANNELS[gChannel].hz / 1e6, 3);
-  Serial.println(" MHz  (rocket must match)");
+  Serial.print(" MHz  ");
+  // Say WHERE the channel came from. "Restored" vs "compile default" is the
+  // difference between "this box remembers yesterday" and "this box just forgot
+  // what you told it", and only one of those needs acting on.
+  Serial.println(restored ? "(restored from last switch; rocket must match)"
+                          : "(compile-time default; rocket must match)");
   printHelp();
 }
 
 void loop() {
   handleSerial();
+  handleButton();
 
   if (gotPkt) {
     gPktCount++;
     Serial.printf("len=%d RSSI=%d SNR=%.1f | %s\n", gLen, gRssi, gSnr, gBuf);
     gotPkt = false;
+
+    digitalWrite(PIN_LED, HIGH);            // link is alive, at a glance
+    gLedOffAt = millis() + LED_PULSE_MS;
+  }
+
+  // Unsigned-safe deadline compare: millis() wraps at ~49 days and a plain
+  // `millis() >= gLedOffAt` would stick the LED on across the wrap.
+  if (gLedOffAt && (long)(millis() - gLedOffAt) >= 0) {
+    digitalWrite(PIN_LED, LOW);
+    gLedOffAt = 0;
   }
 }
