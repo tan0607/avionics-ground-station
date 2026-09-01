@@ -191,13 +191,13 @@ push(P("The filter itself is then just one line, where each new output is the pr
 push(eq([ sub("y", "n"), mr(" = "), sub("y", "n−1"), mr(" + α("), sub("x", "n"),
           mr(" − "), sub("y", "n−1"), mr(")") ]));
 push(P("The detail that matters here is that α is not a fixed number. It is worked out again on every single sample from the Δt that actually happened, which is measured with the microsecond timer. Most simple implementations hard code α once and forget about it. If the main loop then slows down for any reason, the real cutoff frequency quietly moves, and the filter is no longer doing what the setup says it is doing. Working α out each time removes that whole class of problem."));
+push(P("Besides that, the filter is cheap. It is one multiply and one add per channel per sample, so there is no reason to reach for anything heavier unless the measurements say otherwise."));
 push(P("The cutoffs are set in Config.h. The accelerometer is cut at 12 Hz, the gyroscope at 15 Hz and the magnetometer at 3 Hz. The sensor is sampled at roughly 100 Hz, so the highest frequency that can be represented is 50 Hz. Boost and burnout are events that happen over about half a second to a second, which is somewhere around 1 to 2 Hz, so there is a wide gap between what needs to be kept and what needs to be removed. The magnetometer is cut hardest because the magnetic field of the Earth can't change quickly at all, so almost anything fast on that channel is noise."));
 
 // ---------------- 6 ----------------
 push(H("6. The gyro zero rate calibration", HeadingLevel.HEADING_1));
 push(P("In order to remove the bias it first has to be measured. This is done while the rocket is sitting on the pad, by averaging the gyro over a fixed number of samples:"));
-push(eq([ mr("b = "), frac([mr("1")], [mr("N")]),
-          new (require("docx").MathSum)({ children: [sub("ω", "i")] }) ]));
+push(eq([ mr("b = "), frac([mr("1")], [mr("N")]), mr(" ∑ "), sub("ω", "i") ]));
 push(P("N is set to 300, which at about 100 Hz works out at roughly three seconds. The measured value is then subtracted from every gyro reading after that."));
 push(P("Two guards are built around it. If any axis reads more than 15 deg/s during the collection, the whole batch is thrown away and the count starts again, so a bump against the rail can't poison the result. And if the rocket never settles, the routine gives up after 20 seconds and leaves the bias at zero rather than storing a value that is known to be wrong. A bias of zero is only a bit worse than the truth, but a bias measured while the board was being moved can be much worse than nothing at all."));
 push(P("The whole thing is non blocking. It collects its samples across normal passes of the main loop, which matters because the design rule for this flight computer is that nothing is ever allowed to halt."));
@@ -230,6 +230,7 @@ push(P("When that test fails, the prediction still runs but the correction is sk
 push(P("During the burn the measured acceleration is around eight g, so the test fails and the accelerometer is ignored, which is exactly what should happen. In the test flight the gate was off for 13.0 percent of the total time, covering the burn and part of the coast. This is also the reason the calibration and the bias state matter so much. For those few seconds the gyro is the only thing holding the attitude, so any drift in it goes straight into the answer."));
 
 // ---------------- 9 ----------------
+push(P("So the gate is not a small detail. It is the stage that decides whether the attitude survives the burn at all."));
 push(H("9. The complementary filter", HeadingLevel.HEADING_1));
 push(P("A complementary filter runs beside the Kalman filter on the same inputs and with the same trust gate. It isn't used to fly the rocket. It is there so the extra complexity of the Kalman filter can be judged against something simpler."));
 push(eq([ mr("α = "), frac([mr("τ")], [mr("τ + Δt")]) ]));
@@ -252,6 +253,7 @@ push(H("11. How it fits into the firmware", HeadingLevel.HEADING_1));
 push(P("The chain lives in Filters.h and Filters.cpp. It is started once from setup, and after that it is called from readIMU the moment a new sample lands. Being called there and not from the main loop is deliberate, because it means the Δt used by the low pass and by the Kalman filter is the real interval between two sensor samples rather than however long the loop happened to take."));
 push(P("Every filtered channel is written to the SD card next to its raw twin, and the log line carries 54 columns in total. The flight state machine reads the filtered values for the launch and apogee tests. On the console the K key starts a fresh gyro calibration and the R key switches the radio between sending the raw values and the filtered ones, although the card keeps recording both either way."));
 push(P("The whole chain costs about 2.3 kB of program memory, which was found by building the firmware twice with the switch in Config.h turned on and then off. The complete sketch uses 33 percent of the available program space and 7 percent of the memory, so there is plenty of room left."));
+push(P("On top of that, the filter states are reset if the sensor drops out and comes back, but the measured bias is kept. There is no chance to measure it again in the middle of a flight, so throwing it away would make things worse."));
 push(P("There is also a switch that compiles the chain out completely. When it is off, the filtered columns simply mirror the raw ones, and that gives a clean way to compare the two without changing anything else in the build."));
 
 // ---------------- 12 ----------------
@@ -273,6 +275,7 @@ push(...figure("03_attitude.png",
 push(P("Figure 3 is the main result. The thin trace is the angle worked out from the accelerometer on its own, the thick one is the Kalman output and the dashed one is the true attitude. The shaded band is where the trust gate had switched the accelerometer off."));
 push(P("Inside that band the accelerometer angle runs away to nearly ±90 degrees of nonsense while the Kalman output stays on the truth. This is worth being clear about. That error isn't noise and it isn't something a better low pass would have caught. The sensor was measuring the thrust of the motor and reporting it as if it were gravity, so the number was wrong for a physical reason and the only way out of it was to stop believing the sensor for a while."));
 
+push(P("That is the whole reason the gate exists."));
 push(...figure("04_stages.png",
   "Figure 4 — Pitch through all four stages, showing what each one adds."));
 push(P("Figure 4 puts all four stages on one axis. Each one is the previous stage plus one idea. What it shows is that stages one and two both fail inside the shaded region while stages three and four survive it, and that difference is the whole argument for using sensor fusion instead of just smoothing harder."));

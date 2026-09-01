@@ -193,9 +193,8 @@ def fig_gyro(d, out, quiet):
     ax[1].plot(d["T"][m], d["GY"][m], label="GY raw", **RAW_KW)
     ax[1].plot(d["T"][m], d["FGY"][m], label="GY filtered + de-biased", **FILT_KW)
     style(ax[1], None,
-          "On the pad, still. The raw trace sits BELOW zero - that offset is "
-          "the zero-rate bias. The step where the filtered trace jumps onto "
-          "zero is the moment the pad calibration finished.",
+          "On the pad, still. The raw trace sits BELOW zero - that offset "
+          "is the bias. The step onto zero is the calibration finishing.",
           xlabel="time (s)", ylabel="deg/s")
     # Scaled to the bias, not to the glitches - otherwise the
     # offset this panel exists to show is a flat line on zero.

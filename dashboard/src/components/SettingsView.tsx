@@ -6,12 +6,16 @@
  *      this keeps the frozen data layer untouched).
  *   2. Alarms & audio — buzzer master + per-alarm arming + a test beep.
  *   3. Display — high-contrast, table density, row cap.
- *   4. Data export — download the active session's files from the backend.
+ *   4. Radio channel — which rocket the receiver box is tuned to, and the
+ *      A/B switch. Only live on a --serial source; the shown channel comes
+ *      from the box itself, never from what we asked for.
+ *   5. Data export — download the active session's files from the backend.
  */
 import { type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { apiUrl } from "@/lib/api"
 import { useBackendStats, type BackendSource, type StatsState } from "@/hooks/useBackendStats"
+import { useGroundStation } from "@/hooks/useGroundStation"
 import { fmtPercent } from "@/lib/format"
 import type { TelemetryState } from "@/hooks/useTelemetry"
 import type { AlarmSound } from "@/hooks/useAlarmSound"
@@ -274,12 +278,76 @@ function ExportCard({ telemetry, stats }: { telemetry: TelemetryState; stats: St
   )
 }
 
+function RadioChannelCard() {
+  const gs = useGroundStation()
+
+  return (
+    <SettingCard title="Radio Channel">
+      <Row
+        label="Listening to"
+        hint={gs.supported ? "the box reports this, not the console" : undefined}
+      >
+        <span
+          className={cn(
+            "font-mono text-[0.8125rem] tabular-nums",
+            gs.channel ? "text-ink" : "text-ink-mute",
+          )}
+        >
+          {gs.channel ? `Rocket ${gs.channel}` : "—"}
+        </span>
+      </Row>
+
+      <Row label="Switch to" hint="one rocket, one channel">
+        <div className="inline-flex overflow-hidden rounded-sm border border-hairline">
+          {gs.channels.map((c) => {
+            const active = gs.channel === c
+            return (
+              <button
+                key={c}
+                type="button"
+                disabled={!gs.supported || gs.busy}
+                aria-current={active ? "true" : undefined}
+                onClick={() => void gs.setChannel(c)}
+                className={cn(
+                  "px-2.5 py-1 text-[0.6875rem] uppercase tracking-wide transition-colors",
+                  "disabled:cursor-not-allowed disabled:opacity-40",
+                  active ? "bg-surface-2 text-ink" : "text-ink-mute hover:text-ink-dim",
+                )}
+              >
+                {c}
+              </button>
+            )
+          })}
+        </div>
+      </Row>
+
+      {/* Why the control is dead, when it is. Without this the buttons are just
+          greyed out and the operator is left guessing whether the box is
+          missing or the session simply has no radio in it. */}
+      {!gs.supported && gs.reason && (
+        <p className="px-2 pb-2 text-[0.6875rem] leading-snug text-ink-mute">{gs.reason}</p>
+      )}
+      {gs.lastError && (
+        <p className="px-2 pb-2 text-[0.6875rem] leading-snug text-alarm">{gs.lastError}</p>
+      )}
+      {gs.supported && !gs.channel && !gs.lastError && (
+        <p className="px-2 pb-2 text-[0.6875rem] leading-snug text-ink-mute">
+          The receiver announces its channel at boot, on a switch, and when asked.
+          Nothing heard yet — press A or B, or check the port.
+        </p>
+      )}
+    </SettingCard>
+  )
+}
+
+
 export function SettingsView({ telemetry, alarm }: { telemetry: TelemetryState; alarm: AlarmSound }) {
   const stats = useBackendStats() // one poll, shared by the connection + export cards
   return (
     <main className="min-h-0 flex-1 overflow-auto p-2">
       <div className="mx-auto grid max-w-5xl grid-cols-1 gap-2 md:grid-cols-2">
         <ConnectionCard telemetry={telemetry} stats={stats} />
+        <RadioChannelCard />
         <AlarmsCard alarm={alarm} />
         <DisplayCard />
         <ExportCard telemetry={telemetry} stats={stats} />

@@ -227,6 +227,44 @@ class SerialSource:
                 await self.close()
                 await asyncio.sleep(self.RETRY_S)
 
+    def send(self, text: str) -> None:
+        """Write an operator command to the receiver (see MRCC_GroundStation).
+
+        Used by POST /gs/channel to retune the ground station from the console
+        instead of the serial monitor. The sketch takes one key per press --
+        'A'/'B' pick a channel, '?' reports -- so this stays a raw byte write
+        rather than a line protocol.
+
+        CALL THIS OFF THE EVENT LOOP -- the caller runs it in an executor. It is
+        a blocking syscall, and an earlier version that awaited nothing wedged
+        the whole server: one POST and every other request, including /ws, hung
+        behind it. Caught on a pty in testing, which is a harsher writer than
+        real hardware and therefore the right place to find it.
+
+        Deliberately NO flush(). pyserial's posix flush() is termios.tcdrain(),
+        which waits for the UART to physically drain -- microseconds on real
+        hardware, but unbounded against a reader that has stopped reading, and
+        it buys nothing here. write() already loops until every byte is handed
+        to the OS, and one command byte is on its way the moment it is.
+
+        THREAD SAFETY: the reader blocks in `_read_available` on its own
+        executor thread while this runs. That is safe by construction, not by
+        luck -- pyserial's posix write() uses its own os.write on the fd and its
+        own abort pipe (pipe_abort_write_r), sharing no mutable Python state
+        with read(). The kernel serialises the two directions.
+
+        Raises RuntimeError if the port is not open -- unplugged, still
+        retrying, or never opened. The caller turns that into a 503 rather than
+        letting the console believe a command landed.
+        """
+        ser = self._serial
+        if ser is None or not ser.is_open:
+            raise RuntimeError(self.last_error or f"{self.port} is not open")
+        try:
+            ser.write(text.encode("ascii"))
+        except Exception as exc:                 # SerialTimeoutException, OSError...
+            raise RuntimeError(f"write to {self.port} failed: {exc}") from exc
+
     async def close(self) -> None:
         if self._serial is not None and self._serial.is_open:
             self._serial.close()

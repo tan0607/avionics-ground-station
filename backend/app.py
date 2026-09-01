@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -126,6 +127,51 @@ class ConnectionManager:
 # ----------------------------------------------------------------------------
 # Runtime state shared between the ingest loop and the HTTP/WS handlers
 # ----------------------------------------------------------------------------
+# --- ground-station channel, read off the receiver's own output --------------
+# MRCC_GroundStation announces its channel three ways: at boot, on a switch, and
+# when asked with '?'. Matching all three is what lets the console show the
+# channel instead of assuming it -- and assuming is exactly the failure this
+# whole two-channel scheme exists to prevent, since a receiver on the wrong
+# channel is not weak or garbled, it is silent.
+#
+#   RX ready - vehicle B @ 434.100 MHz  (restored from last switch; ...)
+#   ### GS CHANNEL=B FREQ=434.100MHz PREV_PKTS=1834 ###
+#   ### GS STATUS channel=A freq=433.300MHz pkts=57 last_rssi=-53 ...
+_GS_CHANNEL_RE = re.compile(
+    r"(?:RX ready - vehicle\s+|### GS CHANNEL=|### GS STATUS channel=)([A-Z])\b",
+    re.IGNORECASE,
+)
+
+
+class ChannelWatcher:
+    """Track the receiver's channel from the bytes it sends back.
+
+    The console never gets to *decide* the channel -- it asks, and then reads
+    what the box says it did. A command that is written but never acted on (port
+    open, board wedged) therefore shows as the channel simply not changing,
+    rather than as a UI that lies about where it is listening.
+
+    Buffers a partial trailing line because a marker can straddle two chunk
+    boundaries; the cap stops a source that never sends a newline from growing
+    this without bound.
+    """
+
+    MAX_BUFFER = 4096
+
+    def __init__(self) -> None:
+        self.channel: str | None = None
+        self._buf = ""
+
+    def feed(self, chunk: bytes) -> None:
+        self._buf += chunk.decode("utf-8", errors="replace")
+        lines = self._buf.split("\n")
+        self._buf = lines.pop()[-self.MAX_BUFFER:]
+        for line in lines:
+            m = _GS_CHANNEL_RE.search(line)
+            if m:
+                self.channel = m.group(1).upper()
+
+
 class Runtime:
     def __init__(self, fmt: str = "binary") -> None:
         self.manager = ConnectionManager()
@@ -141,6 +187,7 @@ class Runtime:
         self.last_state: int | None = None
         self.frames = 0
         self.started_ms = int(time.time() * 1000)
+        self.gs = ChannelWatcher()
 
 
 async def ingest(rt: Runtime, source: ByteSource) -> None:
@@ -150,6 +197,7 @@ async def ingest(rt: Runtime, source: ByteSource) -> None:
     async for chunk in source.chunks():
         host_ms = int(time.time() * 1000)
         rt.session.write_raw(host_ms, chunk)          # raw first — never lose data
+        rt.gs.feed(chunk)                             # note any channel the receiver announces
         for item in rt.parser.feed(chunk):            # resyncing framer, checksum/format-checked
             t, mf, known, fknown = split_frame(item)
             rt.frames += 1
@@ -375,6 +423,65 @@ def create_app(config: Config) -> FastAPI:
         except json.JSONDecodeError:
             raise ValueError("malformed JSON body")
         return body if isinstance(body, dict) else {}
+
+    @app.get("/gs")
+    async def gs_state() -> JSONResponse:
+        """What the ground-station receiver is listening to, and whether the
+        console may change it.
+
+        `channel` is null until the receiver says which one it is on -- it
+        announces at boot, on a switch, and when asked. Null means "not heard
+        from yet", never "probably A": guessing here would put a channel on
+        screen that nobody verified.
+        """
+        src = config.source
+        supported = isinstance(src, SerialSource)
+        return JSONResponse({
+            "channel": rt.gs.channel,
+            "channels": ["A", "B"],
+            "supported": supported,
+            "reason": None if supported else
+                      "channel switching needs a --serial source; this session "
+                      f"is {src.describe().get('kind', 'not serial')}",
+            "error": getattr(src, "last_error", None),
+        })
+
+    @app.post("/gs/channel")
+    async def gs_set_channel(request: Request) -> JSONResponse:
+        """Retune the receiver by sending it the same key an operator would type.
+
+        Deliberately does NOT report the new channel back. The receiver is the
+        authority on where it is listening, and it says so on its own output;
+        the console picks that up through ChannelWatcher a moment later. Echoing
+        the requested channel here would show a switch that may not have
+        happened.
+        """
+        src = config.source
+        if not isinstance(src, SerialSource):
+            return JSONResponse(
+                {"error": "channel switching needs a --serial source"},
+                status_code=503)
+        try:
+            body = await _json_body(request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=415)
+
+        channel = str(body.get("channel") or "").strip().upper()
+        if channel not in ("A", "B"):
+            return JSONResponse({"error": "channel must be 'A' or 'B'"},
+                                status_code=422)
+        try:
+            # Off the event loop: send() is a blocking syscall, and running it
+            # here directly wedged every other request behind it.
+            await asyncio.get_running_loop().run_in_executor(None, src.send, channel)
+        except RuntimeError as exc:
+            # 503, not 500: the port being shut is a state the operator can fix
+            # (replug, close the Serial Monitor), not a bug in the server.
+            return JSONResponse({"error": str(exc)}, status_code=503)
+
+        print(f"[gs] sent channel {channel} to {src.port}", file=sys.stderr)
+        return JSONResponse({"sent": channel, "channel": rt.gs.channel},
+                            status_code=202)
 
     @app.get("/flight")
     async def flight_state() -> JSONResponse:

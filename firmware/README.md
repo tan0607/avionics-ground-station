@@ -56,6 +56,13 @@ at runtime from the serial monitor, so one box covers a whole launch day:
 | `B` on serial | listen to rocket B (434.1 MHz) |
 | `?` on serial | print the current channel, packet count and last RSSI/SNR |
 
+The dashboard can drive this too — **Set → Radio Channel** has the same A/B
+switch, so you can retune from the laptop without a serial monitor. It sends the
+same key, and the channel it displays comes from the box's own announcement
+rather than from what was asked for, so a command that does not land shows as
+the channel simply not changing. Needs a `--serial` session; on `--fake` or
+`--replay` the card says so and the buttons are dead.
+
 The **BOOT button is the DevKit's own** — nothing to wire. The onboard LED
 answers back: **one blink = A, two blinks = B**, so you can switch and confirm
 with the laptop closed. Between switches the LED pulses on every packet
