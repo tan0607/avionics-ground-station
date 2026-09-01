@@ -42,7 +42,7 @@ const PAD_WINDOW_S = 90
  * the edge of the panel, without handing the post-flight sit any more of the
  * width than that.
  */
-const LANDED_TAIL_S = 2
+const LANDED_TAIL_S = 10
 
 /** Read a themed color from :root; fall back to a literal if unset (SSR/tests). */
 function themeColor(name: string, fallback: string): string {
@@ -130,7 +130,6 @@ export function AltitudeChart({ chart }: { chart: ChartSeries }) {
     const apogeeMarker: uPlot.Plugin = {
       hooks: {
         draw: (u) => {
-          ;(window as unknown as Record<string, unknown>).__altPlot = u
           const a = apogeeRef.current
           if (!a || u.data[0].length === 0) return
           const y = u.valToPos(a.alt, "y", true)
