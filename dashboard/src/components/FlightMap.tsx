@@ -30,8 +30,19 @@ import { useGroundTrack } from "@/hooks/useGroundTrack"
 import { bearingDeg, compass16, formatBearing, formatDistance, haversineMeters } from "@/lib/geo"
 import { cn } from "@/lib/utils"
 
-/** The area covered by the offline extract (bbox from the go-pmtiles cut). */
-const EXTRACT_BOUNDS = L.latLngBounds([3.1537, 101.6161], [3.3337, 101.7961])
+/**
+ * The area covered by the offline extract (bbox from the go-pmtiles cut) —
+ * Perak Tengah: the FELCRA Seberang Perak paddy scheme (the pad) up through
+ * Kg. Gajah to ILD UiTM / Tanjung Tualang (the competition base), so the whole
+ * drive between base and pad stays on-map. Re-cut with:
+ *
+ *   pmtiles extract https://build.protomaps.com/<YYYYMMDD>.pmtiles \
+ *     dashboard/public/basemap.pmtiles --bbox=100.82,3.96,101.14,4.36 --maxzoom=15
+ *
+ * Keep these bounds and that --bbox identical, or the map lets you pan into
+ * blank space that has no tiles behind it.
+ */
+const EXTRACT_BOUNDS = L.latLngBounds([3.96, 100.82], [4.36, 101.14])
 const BASEMAP_URL = `${import.meta.env.BASE_URL}basemap.pmtiles`
 const PMTILES_MAX_ZOOM = 15 // source (Protomaps planet) max; overzoomed above this
 

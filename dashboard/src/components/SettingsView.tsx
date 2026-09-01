@@ -8,9 +8,10 @@
  *   3. Display — high-contrast, table density, row cap.
  *   4. Data export — download the active session's files from the backend.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { apiUrl } from "@/lib/api"
+import { useBackendStats, type BackendSource, type StatsState } from "@/hooks/useBackendStats"
 import { fmtPercent } from "@/lib/format"
 import type { TelemetryState } from "@/hooks/useTelemetry"
 import type { AlarmSound } from "@/hooks/useAlarmSound"
@@ -18,44 +19,6 @@ import { ROW_CAP_OPTIONS, useSettings } from "@/hooks/useSettings"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 
-// --- backend stats poll ------------------------------------------------------
-
-interface BackendStats {
-  session: string | null
-  frames_decoded: number
-  crc_errors: number
-  clients: number
-  loss_pct: number
-}
-
-type StatsState = { status: "loading" | "ok" | "unreachable"; data: BackendStats | null }
-
-function useBackendStats(intervalMs = 2000): StatsState {
-  const [state, setState] = useState<StatsState>({ status: "loading", data: null })
-  const alive = useRef(true)
-
-  useEffect(() => {
-    alive.current = true
-    const poll = async () => {
-      try {
-        const res = await fetch(apiUrl("/stats"), { cache: "no-store" })
-        if (!res.ok) throw new Error(String(res.status))
-        const data = (await res.json()) as BackendStats
-        if (alive.current) setState({ status: "ok", data })
-      } catch {
-        if (alive.current) setState((s) => ({ status: "unreachable", data: s.data }))
-      }
-    }
-    poll()
-    const id = window.setInterval(poll, intervalMs)
-    return () => {
-      alive.current = false
-      window.clearInterval(id)
-    }
-  }, [intervalMs])
-
-  return state
-}
 
 // --- small controls ----------------------------------------------------------
 
@@ -145,6 +108,19 @@ function Stat({ label, value, ink }: { label: string; value: string; ink?: strin
 
 // --- cards -------------------------------------------------------------------
 
+/** What the backend is actually reading, named plainly — see the note in ConnectionCard. */
+function sourceLabel(src: BackendSource | undefined, isMock: boolean, reachable: boolean): string {
+  if (isMock) return "BROWSER MOCK"
+  if (!reachable || !src) return "—"
+  if (src.kind === "serial") return `RADIO · ${src.port ?? "serial"}`
+  if (src.kind === "replay") {
+    const name = src.path?.split("/").slice(-2).join("/") ?? "recorded log"
+    return `REPLAY${src.loop ? " (loop)" : ""} · ${name}`
+  }
+  if (src.kind === "fake") return `BACKEND SIM${src.loop ? " (loop)" : ""}`
+  return src.kind.toUpperCase()
+}
+
 function ConnectionCard({ telemetry, stats }: { telemetry: TelemetryState; stats: StatsState }) {
   const reachable = stats.status === "ok"
   const s = stats.data
@@ -183,6 +159,20 @@ function ConnectionCard({ telemetry, stats }: { telemetry: TelemetryState; stats
           label="Backend"
           value={reachable ? "REACHABLE" : stats.status === "loading" ? "…" : "UNREACHABLE"}
           ink={reachable ? "text-nominal" : stats.status === "loading" ? "text-ink-mute" : "text-caution"}
+        />
+        {/*
+          The Mock/Live buttons above choose where THE BROWSER reads frames
+          from; they cannot choose what the BACKEND reads. Picking "Live"
+          against a backend started with --replay or --fake gets a console fed
+          entirely by recorded or synthetic data, which is how a looping
+          two-minute capture once passed for a flight. So the backend's own
+          answer is printed here, verbatim, next to the switch that doesn't
+          control it.
+        */}
+        <Stat
+          label="Backend source"
+          value={sourceLabel(s?.source, isMock, reachable)}
+          ink={s?.source?.kind === "serial" || isMock ? "text-ink" : "text-caution"}
         />
         <Stat label="Session" value={s?.session ?? (isMock ? "— (mock)" : "—")} ink="text-ink-dim" />
         <Stat label="Frames decoded" value={s ? s.frames_decoded.toLocaleString() : "—"} />

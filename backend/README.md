@@ -58,8 +58,27 @@ never lose data. `raw.log` is length-prefixed binary
 | `raw.log` | verbatim byte records with host timestamps (replayable) |
 | `telemetry.csv` | one decoded row per frame (`packet.CSV_COLUMNS`), flushed per line |
 | `events.csv` | flight-state transitions (pad/liftoff/apogee/deploys/landed) |
+| `mission.log` | ground log: states, pyro, link stale/lost, per-peripheral health |
 
 `flights/` is git-ignored (runtime data).
+
+## Flight output — `flights/<session>/flight-NN_<name>/`
+
+The session above records continuously; a **flight** is the span the operator
+declares with REC (`POST /flight/start` … `/flight/stop`). It holds the same
+five files for that span only, so it replays and analyses on its own.
+
+The boundary is not inferred, and that is deliberate: the onboard clock jumping
+back means a transmitter reboot (394 of them in one 21-hour bench session, not
+394 flights), and a vehicle sitting in `PAD` never reports a liftoff. Both
+candidate auto-rules therefore produce either a folder per reboot or no folder
+at all. `session.py::MissionDeriver` writes `mission.log`; `link_watchdog` in
+`app.py` supplies the events proven by the *absence* of frames (LINK STALE /
+LOST), which a frame-driven loop can never emit.
+
+`session.py::delete_recorded_flight` is the only code here that destroys data:
+it unlinks exactly the five files it wrote and removes the empty directory —
+never a recursive tree walk — and refuses a folder holding anything else.
 
 ## Loss stats — the one policy knob
 

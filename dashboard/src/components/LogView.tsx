@@ -1,16 +1,26 @@
 /**
  * LogView — the Log page: a live raw-telemetry table (left, main) beside a
- * derived mission event log (right). useTelemetryLog is called ONCE here (one
- * accumulator, one source of truth) and its output is handed to the two
- * presentational panels. It piggybacks on the telemetry snapshot without
- * touching the frozen data layer. One viewport: each panel scrolls internally,
- * the page never does.
+ * derived mission event log (right). This file is PRESENTATION ONLY: the single
+ * accumulator lives in App (useTelemetryLog) and arrives here as a prop, so it
+ * keeps recording on every view instead of only while this page is mounted. It
+ * piggybacks on the telemetry snapshot without touching the frozen data layer.
+ * One viewport: each panel scrolls internally, the page never does.
+ *
+ * The telemetry table carries the protocol fields, then radio quality, then one
+ * column per aux field the downlink is currently sending — the same surplus the
+ * Live view's Aux strip shows, which this table did not record at all. It
+ * scrolls sideways rather than dropping columns: the point of this view is that
+ * nothing decoded is missing from it.
  */
 import { cn } from "@/lib/utils"
 import { fmtFixed, fmtInt, fmtSigned, fmtTimer } from "@/lib/format"
 import { FLIGHT_STATE_NAME, GpsFix } from "@/lib/protocol"
-import type { TelemetryState } from "@/hooks/useTelemetry"
-import { useTelemetryLog, type EventSeverity, type LogEvent, type LogRow } from "@/hooks/useTelemetryLog"
+import type {
+  EventSeverity,
+  LogEvent,
+  LogRow,
+  TelemetryLog,
+} from "@/hooks/useTelemetryLog"
 import { useSettings, type TableDensity } from "@/hooks/useSettings"
 import { Card } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -19,6 +29,42 @@ const FIX_NAME: Record<GpsFix, string> = {
   [GpsFix.NONE]: "NO",
   [GpsFix.FIX_2D]: "2D",
   [GpsFix.FIX_3D]: "3D",
+}
+
+/**
+ * Aux columns, discovered from the rows on screen rather than declared here.
+ *
+ * The Live view's Aux strip is data-driven off the frame for a reason — this
+ * transmitter renames and adds fields between builds — and the log has to
+ * follow the same rule or it goes stale the same way. A field the current
+ * downlink doesn't send gets no column at all, rather than a column of dashes.
+ *
+ * ORDER is fixed for the keys we know, then alphabetical for the rest, so the
+ * columns don't reshuffle mid-flight as `extra` gains a key.
+ */
+const AUX_ORDER = ["P", "HDG", "COURSE", "GSPEED", "AZ", "AX", "AY", "VX", "VY", "TEMP"]
+/** Consumed into the GPS health row; a bare 1 in a column means nothing here. */
+const AUX_HIDDEN = new Set(["GPSDATA"])
+
+/** Shorter than the Aux strip's labels — these are column heads, not readouts. */
+const AUX_LABEL: Record<string, string> = {
+  P: "Press",
+  HDG: "Hdg",
+  COURSE: "Crs",
+  GSPEED: "GSpd",
+  TEMP: "Temp",
+}
+
+const AUX_DIGITS: Record<string, number> = { P: 0, HDG: 0, COURSE: 0 }
+
+function auxColumns(rows: LogRow[]): string[] {
+  const seen = new Set<string>()
+  for (const r of rows) {
+    for (const k of Object.keys(r.extra)) if (!AUX_HIDDEN.has(k)) seen.add(k)
+  }
+  const ranked = AUX_ORDER.filter((k) => seen.has(k))
+  const rest = [...seen].filter((k) => !AUX_ORDER.includes(k)).sort()
+  return [...ranked, ...rest]
 }
 
 const SEVERITY_INK: Record<EventSeverity, string> = {
@@ -72,6 +118,7 @@ function TelemetryTable({
   density: TableDensity
 }) {
   const pad = density === "compact" ? "py-0.5" : "py-1.5"
+  const aux = auxColumns(rows)
 
   return (
     <Card className="flex min-h-0 min-w-0 flex-col overflow-hidden">
@@ -85,7 +132,9 @@ function TelemetryTable({
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-auto">
-          <Table className="tnum">
+          {/* min-w-max so the aux columns extend the table and the container
+              scrolls, instead of `w-full` compressing every column to fit. */}
+          <Table className="tnum min-w-max">
             <TableHeader className="sticky top-0 z-10 bg-surface">
               <TableRow className="hover:bg-transparent">
                 <TableHead>Seq</TableHead>
@@ -97,12 +146,29 @@ function TelemetryTable({
                 <TableHead className="text-right">GPS</TableHead>
                 <TableHead className="text-right">VBat</TableHead>
                 <TableHead className="text-right">Flags</TableHead>
+                <TableHead className="text-right">RSSI</TableHead>
+                <TableHead className="text-right">SNR</TableHead>
+                {aux.map((k) => (
+                  <TableHead key={k} className="text-right">
+                    {AUX_LABEL[k] ?? k}
+                  </TableHead>
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((r) => (
-                <TableRow key={r.seq}>
-                  <TableCell className={cn(pad, "text-ink-mute")}>{r.seq.toString().padStart(4, "0")}</TableCell>
+                // key MUST be r.id, never r.seq: seq wraps, restarts on a flight
+                // computer reboot, and repeats when a transmitter sends each
+                // packet twice. Duplicate keys make React reuse the wrong rows
+                // and the log renders blocks of itself over and over.
+                <TableRow key={r.id}>
+                  <TableCell className={cn(pad, "text-ink-mute")}>
+                    {r.seq.toString().padStart(4, "0")}
+                    {/* The same packet heard twice is a real second reception, so
+                        it stays in the log — marked, not hidden, and not silently
+                        collapsed into one row. */}
+                    {r.duplicate && <span className="ml-1 text-ink-mute/50" title="repeat of previous seq">·2</span>}
+                  </TableCell>
                   <TableCell className={cn(pad, "text-right text-ink-dim")}>{(r.onboardMs / 1000).toFixed(1)}</TableCell>
                   <TableCell className={cn(pad, "text-ink")}>{FLIGHT_STATE_NAME[r.flightState]}</TableCell>
                   <TableCell className={cn(pad, "text-right text-ink")}>{fmtInt(r.baroAltM)}</TableCell>
@@ -115,6 +181,21 @@ function TelemetryTable({
                   <TableCell className={cn(pad, "text-right")}>
                     <Flags row={r} />
                   </TableCell>
+                  {/* A source that doesn't measure these renders "—", not 0 —
+                      0 dBm would read as an impossibly strong signal. */}
+                  <TableCell className={cn(pad, "text-right text-ink-mute")}>
+                    {fmtInt(r.rssiDbm)}
+                  </TableCell>
+                  <TableCell className={cn(pad, "text-right text-ink-mute")}>
+                    {fmtFixed(r.snrDb, 1)}
+                  </TableCell>
+                  {aux.map((k) => (
+                    <TableCell key={k} className={cn(pad, "text-right text-ink-dim")}>
+                      {/* Absent from THIS frame while present in others is a
+                          real distinction — an em dash, never a 0. */}
+                      {k in r.extra ? fmtFixed(r.extra[k], AUX_DIGITS[k] ?? 2) : "—"}
+                    </TableCell>
+                  ))}
                 </TableRow>
               ))}
             </TableBody>
@@ -151,8 +232,12 @@ function EventLog({ events }: { events: LogEvent[] }) {
   )
 }
 
-export function LogView({ telemetry }: { telemetry: TelemetryState }) {
-  const log = useTelemetryLog(telemetry)
+/**
+ * `log` is a PROP, not a hook call. The accumulator lives in App so it keeps
+ * recording while the operator is on the Live or Map view — mounting it here
+ * meant the log only existed while it was being looked at.
+ */
+export function LogView({ log }: { log: TelemetryLog }) {
   const { settings } = useSettings()
   const rows = log.rows.slice(0, settings.table.rowCap)
 

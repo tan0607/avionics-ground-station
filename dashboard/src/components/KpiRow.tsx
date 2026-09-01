@@ -10,8 +10,14 @@ import { fmtFixed, fmtInt, fmtSigned } from "@/lib/format"
 import { FlightState, GpsFix, isDescending, type TelemetryFrame } from "@/lib/protocol"
 import { KpiCell, type Tone } from "./KpiCell"
 
-/** 2S LiPo: ink while healthy, warn approaching cutoff, alarm below it. */
-function vbatTone(v: number): Tone {
+/**
+ * 2S LiPo: ink while healthy, warn approaching cutoff, alarm below it.
+ * `null` = the downlink carries no battery reading, which must read as unknown
+ * rather than as 0.0 V — a red 0.0 V is the single most launch-scrubbing thing
+ * this panel can say, and it would be saying it about a measurement nobody took.
+ */
+function vbatTone(v: number | null): Tone {
+  if (v === null) return "ink"
   if (v < 7.0) return "alarm"
   if (v < 7.4) return "caution"
   return "ink"
@@ -50,7 +56,7 @@ export function KpiRow({ frame, maxAltM }: { frame: TelemetryFrame | null; maxAl
         />
         <KpiCell
           label="Vbat"
-          value={frame ? fmtFixed(frame.vbatV, 1) : dash}
+          value={frame && frame.vbatV !== null ? fmtFixed(frame.vbatV, 1) : dash}
           unit="V"
           tone={frame ? vbatTone(frame.vbatV) : "ink"}
         />

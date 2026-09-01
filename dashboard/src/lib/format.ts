@@ -45,6 +45,23 @@ export function fmtTimer(seconds: number | null | undefined): string {
   return `${sign} ${pad(mm)}:${pad(ss)}.${tenths}`
 }
 
+/**
+ * Elapsed duration: seconds → "02:14" (or "1:02:14" past the hour).
+ *
+ * Distinct from fmtTimer, which is the MISSION clock — signed, tenths, counting
+ * from liftoff. A recording timer is neither: it never runs negative, and
+ * tenths on a wall-clock elapsed just flicker.
+ */
+export function fmtDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "--:--"
+  const s = Math.floor(seconds)
+  const hh = Math.floor(s / 3600)
+  const mm = Math.floor((s % 3600) / 60)
+  const ss = s % 60
+  const pad = (n: number) => n.toString().padStart(2, "0")
+  return hh > 0 ? `${hh}:${pad(mm)}:${pad(ss)}` : `${pad(mm)}:${pad(ss)}`
+}
+
 /** Seconds-since-last-packet, compact: "0.3s" / "8.2s". */
 export function fmtLinkAge(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return "--"

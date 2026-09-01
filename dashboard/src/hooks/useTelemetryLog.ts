@@ -14,6 +14,17 @@
  * Cross-cutting fields (link, alarms, tPlusSec) update on UI ticks too, so the
  * latest snapshot is mirrored into `tRef` and read inside the effects — that
  * keeps the frame effect from having to re-run 10 Hz just to see fresh values.
+ *
+ * BOTH LISTS SURVIVE THE TAB CLOSING. They are mirrored to localStorage on a
+ * quiet interval and flushed on pagehide, and restored on mount. The log had
+ * been in-memory only, so it evaporated on quit and on every receiver reboot —
+ * which the backend triggers itself, on every connect, by pulsing the ESP32's
+ * reset line. Rows also carry the frame's `extra` fields and radio metrics now:
+ * the Live view was showing a dozen readouts that the one view built for
+ * reading telemetry back did not record at all.
+ *
+ * The backend's telemetry.csv remains the authoritative flight record; this is
+ * the operator's working copy, and it does not need the backend to be up.
  */
 import { useEffect, useRef, useState } from "react"
 import {
@@ -25,7 +36,17 @@ import type { LinkState, TelemetryState } from "./useTelemetry"
 
 /** A captured frame, flattened for tabular display. */
 export interface LogRow {
+  /**
+   * Unique, monotonic, per-session. This is the React key — `seq` is NOT usable
+   * as one: it wraps at 65535, it restarts whenever the flight computer reboots,
+   * and the current transmitter sends every packet twice. Duplicate keys make
+   * React reuse the wrong rows, which renders as blocks of the log repeating
+   * themselves — data corruption that is entirely in the display layer.
+   */
+  id: number
   seq: number
+  /** True when this row repeats the previous row's seq (the same packet heard twice). */
+  duplicate: boolean
   onboardMs: number
   tPlusSec: number | null
   flightState: FlightState
@@ -34,11 +55,22 @@ export interface LogRow {
   tiltDeg: number
   gpsSats: number
   gpsFix: GpsFix
-  vbatV: number
+  /** null when the downlink carries no battery reading — rendered "—", not 0.0. */
+  vbatV: number | null
   continuity: boolean
   pyroFired: boolean
   sdOk: boolean
   armed: boolean
+  /** Per-packet radio quality, null when the source doesn't measure it. */
+  rssiDbm: number | null
+  snrDb: number | null
+  /**
+   * Every decoded field the protocol has no slot for — pressure, heading,
+   * course, ground speed, body accel/velocity. Carried here because the Live
+   * view showed all of them and the log showed none, so the one view meant for
+   * reading telemetry back was the only one missing most of it.
+   */
+  extra: Record<string, number>
 }
 
 export type EventSeverity = "info" | "nominal" | "caution" | "alarm"
@@ -67,6 +99,60 @@ const MAX_EVENTS = 300
 // Onboard clock jumping this far backwards = new flight (mirrors useTelemetry).
 const SESSION_RESET_MS = 1500
 
+// --- persistence -------------------------------------------------------------
+// The log used to live only in this hook's ref, so closing the tab threw the
+// whole thing away — and so did every reboot of the receiver, because the
+// backend pulses the ESP32's reset line on connect and the resulting onboard
+// clock jump was treated as "new flight, clear the table".
+//
+// telemetry.csv on the backend is still the authoritative record. This is the
+// operator's working copy: what they were looking at, restored where they left
+// it, without needing the backend to be reachable or a file to be opened.
+const STORAGE_KEY = "apex.log.v1"
+// Well under the ~5 MB localStorage budget: 600 rows carrying aux fields is
+// ~200 KB of JSON. Capped separately from MAX_ROWS because what is worth
+// keeping in memory for this session and what is worth writing to disk for the
+// next one are different questions.
+const PERSIST_ROWS = 600
+// Writing on every frame would serialise the whole log 2x a second for no
+// benefit; a quiet flush plus a hard flush on hide covers both the crash case
+// and the ordinary "close the lid" case.
+const PERSIST_INTERVAL_MS = 2000
+
+interface PersistedLog {
+  rows: LogRow[]
+  events: LogEvent[]
+}
+
+function loadPersisted(): PersistedLog | null {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PersistedLog>
+    if (!Array.isArray(parsed.rows) || !Array.isArray(parsed.events)) return null
+    return { rows: parsed.rows, events: parsed.events }
+  } catch {
+    // Corrupt blob, quota-disabled storage, private mode — start empty rather
+    // than taking the Log view down with it.
+    return null
+  }
+}
+
+function savePersisted(log: TelemetryLog): void {
+  try {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        rows: log.rows.slice(0, PERSIST_ROWS),
+        events: log.events.slice(0, MAX_EVENTS),
+      }),
+    )
+  } catch {
+    // Over quota or storage disabled: the in-memory log is unaffected, and a
+    // failed save must never interrupt a live flight.
+  }
+}
+
 const LINK_EVENT: Record<LinkState, { severity: EventSeverity; message: string }> = {
   live: { severity: "nominal", message: "LINK LIVE" },
   stale: { severity: "caution", message: "LINK STALE" },
@@ -74,7 +160,15 @@ const LINK_EVENT: Record<LinkState, { severity: EventSeverity; message: string }
 }
 
 export function useTelemetryLog(t: TelemetryState): TelemetryLog {
-  const ref = useRef<TelemetryLog>({ rows: [], events: [], rev: 0 })
+  // Seeded from localStorage so reopening the console shows the log where it
+  // was left, not an empty table. useRef's initialiser runs on every render, so
+  // the read is done once via a lazy useState instead.
+  const [restored] = useState(loadPersisted)
+  const ref = useRef<TelemetryLog>({
+    rows: restored?.rows ?? [],
+    events: restored?.events ?? [],
+    rev: 0,
+  })
 
   // Latest snapshot, readable inside effects without widening their deps.
   const tRef = useRef(t)
@@ -87,7 +181,12 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
   const prevNoDeploy = useRef(false)
   const prevOnboardMs = useRef<number | null>(null)
   const prevLink = useRef<LinkState | null>(null)
-  const nextId = useRef(1)
+  // Both lists are newest-first, so [0] holds the highest id. RESUMING past the
+  // restored maximum is not optional: ids are the React keys, and restarting at
+  // 0 alongside a restored log would hand React duplicate keys, which makes it
+  // reuse the wrong rows and render blocks of the log repeating themselves.
+  const nextRowId = useRef((restored?.rows[0]?.id ?? -1) + 1)
+  const nextId = useRef((restored?.events[0]?.id ?? 0) + 1)
 
   const [, forceRender] = useState(0)
 
@@ -106,17 +205,24 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     const frame = snap.frame
     if (!frame) return
 
-    // Session reset: onboard clock jumped backwards → clear rows, log a marker,
-    // and forget the previous flight's edges so the new flight logs cleanly.
+    // Session reset: the onboard clock jumped backwards. Log a marker and forget
+    // the previous flight's edges so the new flight's transitions log cleanly.
+    //
+    // The rows are KEPT. This used to clear them, which sounds tidy and is the
+    // second way the log disappeared: the backend pulses the receiver's reset
+    // line on every connect, so merely restarting the server wiped the operator's
+    // whole table. The SESSION RESET event below is the boundary marker — that
+    // is enough to tell two flights apart, and it costs nothing, whereas
+    // throwing away the previous flight's telemetry is unrecoverable from here.
+    // Old rows age out at MAX_ROWS on their own.
     const prevOn = prevOnboardMs.current
     if (prevOn != null && frame.onboardMs + SESSION_RESET_MS < prevOn) {
-      ref.current.rows = []
       prevState.current = null
       prevPyro.current = false
       prevNoDeploy.current = false
       pushEvent({
         onboardMs: frame.onboardMs,
-        tPlusSec: snap.tPlusSec,
+        tPlusSec: snap.frameTPlusSec,
         kind: "session",
         severity: "info",
         message: "SESSION RESET",
@@ -124,10 +230,14 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
       })
     }
 
+    const rowsNow = ref.current.rows
     const row: LogRow = {
+      id: nextRowId.current++,
       seq: frame.seq,
+      // rows[0] is the newest (unshift below), so that is the previous frame.
+      duplicate: rowsNow.length > 0 && rowsNow[0].seq === frame.seq,
       onboardMs: frame.onboardMs,
-      tPlusSec: snap.tPlusSec,
+      tPlusSec: snap.frameTPlusSec,
       flightState: frame.flightState,
       baroAltM: frame.baroAltM,
       vspeedMs: frame.vspeedMs,
@@ -139,8 +249,11 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
       pyroFired: frame.pyroFired,
       sdOk: frame.sdOk,
       armed: frame.armed,
+      rssiDbm: frame.rssiDbm,
+      snrDb: frame.snrDb,
+      extra: frame.extra,
     }
-    const rows = ref.current.rows
+    const rows = rowsNow
     rows.unshift(row)
     if (rows.length > MAX_ROWS) rows.length = MAX_ROWS
 
@@ -150,7 +263,7 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     if (prevState.current === null) {
       pushEvent({
         onboardMs: frame.onboardMs,
-        tPlusSec: snap.tPlusSec,
+        tPlusSec: snap.frameTPlusSec,
         kind: "session",
         severity: "info",
         message: "SESSION START",
@@ -159,7 +272,7 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     } else if (prevState.current !== frame.flightState) {
       pushEvent({
         onboardMs: frame.onboardMs,
-        tPlusSec: snap.tPlusSec,
+        tPlusSec: snap.frameTPlusSec,
         kind: "state",
         severity: "info",
         message: stateName,
@@ -170,7 +283,7 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     if (!prevPyro.current && frame.pyroFired) {
       pushEvent({
         onboardMs: frame.onboardMs,
-        tPlusSec: snap.tPlusSec,
+        tPlusSec: snap.frameTPlusSec,
         kind: "pyro",
         severity: "caution",
         message: "PYRO FIRED",
@@ -181,7 +294,7 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     if (!prevNoDeploy.current && snap.alarms.noDeploy) {
       pushEvent({
         onboardMs: frame.onboardMs,
-        tPlusSec: snap.tPlusSec,
+        tPlusSec: snap.frameTPlusSec,
         kind: "no-deploy",
         severity: "alarm",
         message: "NO-DEPLOY",
@@ -213,6 +326,10 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     const snap = tRef.current
     pushEvent({
       onboardMs: snap.frame?.onboardMs ?? 0,
+      // The WALL-CLOCK T+, not the last frame's: a link event happens when the
+      // ground station notices, and the last frame is by definition stale
+      // exactly when this fires. Stamping "LINK LOST" with the timestamp of the
+      // final packet would record the loss as having happened before it did.
       tPlusSec: snap.tPlusSec,
       kind: "link",
       severity,
@@ -221,6 +338,27 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     ref.current.rev += 1
     forceRender((n) => n + 1)
   }, [t.link])
+
+  // --- persistence: quiet ticks + a hard flush when the page goes away --------
+  useEffect(() => {
+    const flush = () => savePersisted(ref.current)
+    const timer = window.setInterval(flush, PERSIST_INTERVAL_MS)
+
+    // `pagehide` (not `beforeunload`) is the one that actually fires on a tab
+    // close and on mobile/bfcache suspends, which is precisely the "I quit it"
+    // case this whole block exists for. `visibilitychange` covers switching
+    // away without closing.
+    const onHide = () => flush()
+    window.addEventListener("pagehide", onHide)
+    document.addEventListener("visibilitychange", onHide)
+
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener("pagehide", onHide)
+      document.removeEventListener("visibilitychange", onHide)
+      flush()
+    }
+  }, [])
 
   return ref.current
 }

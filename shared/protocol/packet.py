@@ -55,6 +55,11 @@ FLAG_SD_OK      = 1 << 2   # onboard SD logging healthy
 FLAG_ARMED      = 1 << 3   # flight computer armed
 # bits 4-7 reserved
 
+# Every flag a binary frame reports. A source that carries no flags at all (the
+# MRCC text downlink) reports none of them, and 0 there must read as "unknown",
+# NOT as continuity open + SD failed -- see to_csv_row / backend.wire.
+FLAGS_ALL = FLAG_CONTINUITY | FLAG_PYRO_FIRED | FLAG_SD_OK | FLAG_ARMED
+
 # --- health bitfield (uint8) ------------------------------------------------
 # PER-PERIPHERAL health. Bit SET = that device initialised and is currently
 # responding; bit CLEAR = it is not, and every field it feeds is untrustworthy.
@@ -151,8 +156,31 @@ class Telemetry:
         """
         return [name for mask, name, _ in SUBSYSTEMS if not self.health & mask]
 
-    def to_csv_row(self, host_time: str, gps_time: str = "") -> dict:
-        """One dict keyed by CSV_COLUMNS. Backend writes host_time + gps_time."""
+    def to_csv_row(self, host_time: str, gps_time: str = "",
+                   health_known: int | None = None,
+                   flags_known: int | None = None) -> dict:
+        """One dict keyed by CSV_COLUMNS. Backend writes host_time + gps_time.
+
+        `health_known` is a mask of the health bits this frame actually reports.
+        None (the default) means all six — a binary frame always carries the
+        whole health byte. A source that only knows some of them (see
+        shared/protocol/mrcc.py) passes the subset, and the unknown `hw_*` cells
+        are written EMPTY rather than 0. That distinction matters downstream:
+        PROTOCOL.md is explicit that a 0 means "this peripheral is down", so
+        writing 0 for "nobody told us" would put six fabricated failures into the
+        post-flight record. `flags_known` does the same for the flags bitfield,
+        where a 0 in `continuity` reads as an OPEN e-match circuit.
+
+        `vbat_v` follows the VBAT health bit rather than a flag of its own:
+        PROTOCOL.md already defines that bit as gating the field it feeds, and a
+        battery reading nobody took must not be recorded as 0.0 V -- on the pad
+        that is indistinguishable from a flat pack.
+        """
+        def flag(mask: int):
+            if flags_known is None or flags_known & mask:
+                return int(self.flag(mask))
+            return ""
+        vbat_known = health_known is None or health_known & HEALTH_VBAT
         try:
             state = FlightState(self.flight_state).name
         except ValueError:
@@ -171,12 +199,14 @@ class Telemetry:
             "gps_sats": self.gps_sats,
             "gps_fix": self.gps_fix,
             "tilt_deg": self.tilt_deg,
-            "vbat_v": self.vbat_v,
-            "continuity": int(self.flag(FLAG_CONTINUITY)),
-            "pyro_fired": int(self.flag(FLAG_PYRO_FIRED)),
-            "sd_ok": int(self.flag(FLAG_SD_OK)),
-            "armed": int(self.flag(FLAG_ARMED)),
-            **{col: int(bool(self.health & mask)) for mask, _, col in SUBSYSTEMS},
+            "vbat_v": self.vbat_v if vbat_known else "",
+            "continuity": flag(FLAG_CONTINUITY),
+            "pyro_fired": flag(FLAG_PYRO_FIRED),
+            "sd_ok": flag(FLAG_SD_OK),
+            "armed": flag(FLAG_ARMED),
+            **{col: (int(bool(self.health & mask))
+                     if health_known is None or health_known & mask else "")
+               for mask, _, col in SUBSYSTEMS},
         }
 
 

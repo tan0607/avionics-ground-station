@@ -6,19 +6,24 @@ thing is **offline-first** (no CDNs, self-hosted fonts + map tiles) because the
 launch site has no network.
 
 ```
- rocket ─LoRa→ SX1278 bridge ─USB serial→ backend (FastAPI) ─WebSocket→ dashboard (React)
-                                         │
-                                         └─ flights/<session>/  (always on)
-                                              └─ flight-NN_<name>/  (operator-declared)
+ rocket ─LoRa→ ground station ─USB serial→ backend (FastAPI) ─WebSocket→ dashboard (React)
+ (ESP32-S3)     (ESP32)                   │
+                                          └─ flights/<session>/  (always on)
+                                               └─ flight-NN_<name>/  (operator-declared)
 ```
 
+- **`firmware/`** — the two Arduino sketches that fly: `MRCC_FlightComputer`
+  (ESP32-S3 — sensors, filters, flight state, pyro, SD log, downlink) and
+  `MRCC_GroundStation` (ESP32 — receives and prints to USB). Plus `SD_Doctor`
+  and host-side filter tooling. **Read `firmware/README.md` before flashing.**
 - **`backend/`** — reads bytes (serial in prod, a simulator in dev), logs raw
-  bytes first, decodes the 32-byte packet, writes the session CSVs, and
-  broadcasts each decoded frame over `/ws`. Also serves the built dashboard.
+  bytes first, decodes them, writes the session CSVs, and broadcasts each
+  decoded frame over `/ws`. Also serves the built dashboard.
 - **`dashboard/`** — Vite + React + TS console: Live telemetry, offline Map,
-  Log (raw frames + event log), and Settings.
-- **`shared/protocol/`** — the 32-byte packet codec + `PROTOCOL.md` (the one
-  source of truth; firmware mirrors it byte-for-byte).
+  Log (raw frames + event log), Flights, and Settings.
+- **`shared/protocol/`** — `mrcc.py` decodes the ASCII downlink the vehicle
+  actually sends; `packet.py` is the internal `Telemetry` shape everything
+  downstream consumes, and `PROTOCOL.md` documents it.
 - **`shared/fake_telemetry.py`** — simulates a full flight (pad → boost → apogee
   → drogue → main → landed) so nothing needs hardware to develop against.
 - **`flights/<session>/`** — per-run data (`raw.log`, `telemetry.csv`,
@@ -26,8 +31,24 @@ launch site has no network.
 - **`flights/<session>/flight-NN_<name>/`** — one operator-declared flight, the
   same five files for its span only. Cut with the REC button in the top bar.
 
-See `HANDOFF.md` (architecture + decisions), `DESIGN_SPECS.md` (dashboard UI),
-and `shared/protocol/PROTOCOL.md` (wire format) for depth.
+### Two rockets fly
+
+Each airframe gets its own radio channel — `VEHICLE_A` is 433.3 MHz, `VEHICLE_B`
+is 434.1 MHz — and **a rocket and its ground station must be flashed from the
+same setting.** LoRa does not pair: on a shared channel each ground station
+decodes the *other* rocket's frames while the two transmitters collide on air.
+`firmware/README.md` has the flashing table and the arithmetic.
+
+### Two wire formats
+
+The link carries **MRCC**, an ASCII `key=value` line (`MRCC,PKT=207,T=207.5,…`)
+that `mrcc.py` decodes and maps onto `packet.Telemetry`. The 32-byte binary
+frame in `PROTOCOL.md` is the format this project originally designed; only
+`--fake` still produces it. `--format` defaults per source, so a live run needs
+no flag.
+
+See `HANDOFF.md` (architecture + decisions — note its staleness banner),
+`DESIGN_SPECS.md` (dashboard UI), and `shared/protocol/PROTOCOL.md` for depth.
 
 ---
 

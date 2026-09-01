@@ -1,8 +1,10 @@
 """Packet-loss tracking from the 16-bit sequence counter.
 
-The E32 has no RSSI output (that's an E22/E220 feature), so the ONLY link-quality
-signal we get is the per-packet `seq` counter. Loss % = how many sequence numbers
-went missing between the frames we actually decoded.
+Loss % = how many sequence numbers went missing between the frames we actually
+decoded. This used to be the ONLY link-quality signal available, because the E32
+had no RSSI output; the SX1278 that replaced it reports RSSI and SNR per packet
+(see mrcc.LinkQuality), so seq gaps are now one signal of two rather than all
+there is.
 
 `seq` is a uint16 (0..65535) that increments once per transmitted packet and wraps.
 So the forward distance between two received seqs is `(seq - last) & 0xFFFF`.
@@ -28,8 +30,14 @@ class LossTracker:
     `RESET_GAP` is the policy knob: a forward jump larger than this is treated as
     a stream restart (flight computer/bridge reboot -> seq counter jumps or resets)
     rather than a genuine burst loss, so we re-baseline instead of inventing tens
-    of thousands of "lost" packets. Tune it to your longest plausible real dropout
-    at 4 Hz (1000 packets ~= 4 minutes of blackout).
+    of thousands of "lost" packets. Tune it to your longest plausible real
+    dropout: at the link's measured 2 Hz (session.PACKET_DESC), 1000 packets is
+    ~8 minutes of blackout.
+
+    `duplicates` is not a rounding detail on this link -- the transmitter sends
+    every packet TWICE, so roughly half of all decoded frames land here with
+    delta == 0. They are counted and then excluded from `expected`, which is why
+    a healthy link reads 0.0% loss rather than 50%.
     """
 
     RESET_GAP = 1000

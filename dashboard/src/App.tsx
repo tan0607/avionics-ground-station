@@ -1,8 +1,8 @@
 /**
  * App — the single-screen ground-station console (monochrome terminal).
  * Left view rail · top mission bar · KPI instrument strip · main split:
- * a stacked sensor-chart column (altitude, then vertical-speed + tilt) on the
- * left, GO/NO-GO + flight-state timeline on the right. Pure black, 1px hairline
+ * a stacked sensor-chart column (altitude, then vertical-speed + tilt + the
+ * body accelerations) on the left, GO/NO-GO + flight-state timeline on the right. Pure black, 1px hairline
  * panels, white data / semantic status only. One viewport, no scroll.
  * The whole data layer (useTelemetry off the mock) is unchanged; the secondary
  * channels come from useSensorSeries, which piggybacks on it without touching it.
@@ -11,20 +11,65 @@ import { useEffect, useState, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { useTelemetry } from "@/hooks/useTelemetry"
 import { useSensorSeries } from "@/hooks/useSensorSeries"
+import { useTelemetryLog } from "@/hooks/useTelemetryLog"
+import { useFlightRecorder } from "@/hooks/useFlightRecorder"
 import { useSettings } from "@/hooks/useSettings"
+import { useBackendStats } from "@/hooks/useBackendStats"
 import { useAlarmSound } from "@/hooks/useAlarmSound"
 import { Card } from "@/components/ui/card"
 import { SideNav, type ViewId } from "@/components/SideNav"
 import { TopBar } from "@/components/TopBar"
 import { KpiRow } from "@/components/KpiRow"
 import { AltitudeChart } from "@/components/AltitudeChart"
-import { SensorChart } from "@/components/SensorChart"
+import { SensorChart, SensorLegend, type SensorTrace } from "@/components/SensorChart"
 import { GoNoGo } from "@/components/GoNoGo"
 import { SubsystemHealth } from "@/components/SubsystemHealth"
+import { AuxReadouts } from "@/components/AuxReadouts"
 import { FlightTimeline } from "@/components/FlightTimeline"
 import { FlightMap } from "@/components/FlightMap"
 import { LogView } from "@/components/LogView"
+import { FlightsView } from "@/components/FlightsView"
 import { SettingsView } from "@/components/SettingsView"
+
+/**
+ * How much recent history the three instrument panels show.
+ *
+ * They used to plot the whole session, which is wrong for an instrument in two
+ * ways at once: after ten minutes on the pad a new packet moves the trace by a
+ * fraction of a pixel (the panel reads as frozen), and the y auto-range spans
+ * every transient since power-up, so one knock of the airframe flattens the
+ * live signal into a hairline. 90 s is long enough to hold a whole boost →
+ * apogee → deploy sequence and short enough that a 2 Hz link advances the trace
+ * by a visible ~2 px per packet. The altitude chart above is deliberately NOT
+ * windowed — the flight arc is the one thing you want whole.
+ */
+const SENSOR_WINDOW_SEC = 90
+
+/**
+ * The three body-axis accelerations, as one panel. They are read together —
+ * "is the thrust axis still the thrust axis" is a comparison, not three
+ * separate questions — so they share a y-scale rather than getting a card each.
+ *
+ * Colors are named as CSS custom properties (SensorChart resolves them off
+ * :root, and the legend swatch uses the same var) so the console stays the one
+ * source of truth for its palette. Az gets the white --data stroke because it
+ * is the axis that carries thrust and gravity; the lateral pair is tinted only
+ * to separate it, and the legend directly above says so — the semantic reading
+ * of green/amber belongs to the status panels, not here.
+ */
+const ACCEL_TRACES: (SensorTrace & { channel: "ax" | "ay" | "az" })[] = [
+  { label: "Az", channel: "az", color: "--data", ys: [] },
+  { label: "Ax", channel: "ax", color: "--nominal", ys: [] },
+  { label: "Ay", channel: "ay", color: "--caution", ys: [] },
+]
+
+/**
+ * The window marker for a scrolling panel. Without it the operator has no way
+ * to tell a windowed instrument from a broken one that lost its history.
+ */
+function WindowTag() {
+  return <span className="text-ink-mute">{SENSOR_WINDOW_SEC}s</span>
+}
 
 function ChartCard({
   title,
@@ -39,19 +84,73 @@ function ChartCard({
 }) {
   return (
     <Card className={cn("min-h-0 min-w-0 overflow-hidden", className)}>
-      <div className="flex items-baseline justify-between border-b border-hairline px-4 py-1.5">
-        <span className="text-[0.6875rem] uppercase tracking-[0.14em] text-ink-mute">{title}</span>
-        {right && <span className="text-[0.625rem] tabular-nums text-ink-mute">{right}</span>}
+      {/*
+        The chart column is a third as wide per panel as it used to be, so the
+        header has to survive a title and a legend competing for it: the title
+        truncates and the right slot never does. Losing a character of "Accel"
+        is recoverable; losing the key that says which trace is Az is not.
+      */}
+      <div className="flex items-baseline justify-between gap-2 border-b border-hairline px-3 py-1.5">
+        <span className="truncate text-[0.6875rem] uppercase tracking-[0.14em] text-ink-mute">
+          {title}
+        </span>
+        {right && (
+          <span className="shrink-0 text-[0.625rem] tabular-nums text-ink-mute">{right}</span>
+        )}
       </div>
       <div className="min-h-0 flex-1 p-2">{children}</div>
     </Card>
   )
 }
 
+/**
+ * SourceAlarm — "the backend cannot read the radio", which is NOT the same as
+ * "the radio is quiet" even though both leave the console empty.
+ *
+ * It sits above every view because the distinction changes what the operator
+ * does: a held serial port is fixed on the laptop in seconds, while a silent
+ * link sends someone walking to the pad. Without this the two were the same
+ * "NO LINK" indicator.
+ */
+function SourceAlarm({ error }: { error: string | null | undefined }) {
+  if (!error) return null
+  const busy = /busy|resource/i.test(error)
+  return (
+    <div
+      role="alert"
+      className="flex shrink-0 items-baseline gap-3 border-b border-alarm/40 bg-alarm/10 px-3 py-1.5"
+    >
+      <span className="text-[0.625rem] uppercase tracking-[0.16em] text-alarm">
+        No serial source
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-ink-dim" title={error}>
+        {error}
+      </span>
+      {busy && (
+        <span className="shrink-0 text-[0.625rem] uppercase tracking-[0.12em] text-ink-mute">
+          close the Serial Monitor — reconnects automatically
+        </span>
+      )}
+    </div>
+  )
+}
+
 function App() {
   const [view, setView] = useState<ViewId>("live")
   const telemetry = useTelemetry()
+  // Live sources only: in mock mode there is no backend to be broken.
+  const stats = useBackendStats(telemetry.source === "mock" ? 60_000 : 2000)
   const sensors = useSensorSeries(telemetry)
+  // The log accumulates at APP level, not inside LogView. It used to be called
+  // from that component, which App only mounts while the Log tab is open — so
+  // the log recorded nothing at all whenever the operator was looking at any
+  // other view, and switching tabs threw away what it had. A flight recorder
+  // that only records while you watch it is not a flight recorder.
+  const log = useTelemetryLog(telemetry)
+  // Flight folders are operator-declared, so the recorder lifecycle belongs at
+  // app level with the always-mounted top bar control rather than inside any
+  // individual view.
+  const recorder = useFlightRecorder()
   const { settings } = useSettings()
   // Buzzer lives at app level so alarms sound on every view, not just Settings.
   const alarm = useAlarmSound(telemetry, settings)
@@ -67,11 +166,13 @@ function App() {
       <SideNav active={view} onSelect={setView} />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar state={telemetry} />
+        <TopBar state={telemetry} backend={stats.data?.source} recorder={recorder} />
+        {telemetry.source !== "mock" && <SourceAlarm error={stats.data?.source_error} />}
 
         {view === "live" && (
           <>
             <KpiRow frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
+            <AuxReadouts frame={telemetry.frame} />
 
             <main className="grid min-h-0 flex-1 grid-cols-[1fr_17rem] gap-2 p-2">
               {/* sensor-chart column */}
@@ -84,12 +185,54 @@ function App() {
                   <AltitudeChart chart={telemetry.chart} />
                 </ChartCard>
 
-                <div className="grid min-h-0 flex-1 grid-cols-2 gap-2">
-                  <ChartCard title="Vertical Speed · m/s">
-                    <SensorChart xs={sensors.xs} ys={sensors.vspeed} rev={sensors.rev} unit="" signed />
+                <div className="grid min-h-0 flex-1 grid-cols-3 gap-2">
+                  <ChartCard title="Vertical Speed · m/s" right={<WindowTag />}>
+                    <SensorChart
+                      xs={sensors.xs}
+                      traces={[{ label: "Vz", ys: sensors.vspeed }]}
+                      rev={sensors.rev}
+                      unit=" m/s"
+                      signed
+                      minSpan={2}
+                      windowSec={SENSOR_WINDOW_SEC}
+                    />
                   </ChartCard>
-                  <ChartCard title="Tilt · deg">
-                    <SensorChart xs={sensors.xs} ys={sensors.tilt} rev={sensors.rev} unit="°" yDomain={[0, 180]} />
+                  {/*
+                    Tilt is clamped to what the quantity can physically be but
+                    NOT pinned to it: on a real flight it lives between 0 and a
+                    few degrees, so a hard 0..180 axis drew a flat line along
+                    the bottom and read as a broken chart. minSpan keeps a
+                    near-upright vehicle from being magnified into noise.
+                  */}
+                  <ChartCard title="Tilt · deg" right={<WindowTag />}>
+                    <SensorChart
+                      xs={sensors.xs}
+                      traces={[{ label: "Tilt", ys: sensors.tilt }]}
+                      rev={sensors.rev}
+                      unit="°"
+                      clamp={[0, 180]}
+                      minSpan={10}
+                      windowSec={SENSOR_WINDOW_SEC}
+                    />
+                  </ChartCard>
+                  <ChartCard
+                    title="Accel · m/s²"
+                    right={
+                      <span className="flex items-center gap-2">
+                        <WindowTag />
+                        <SensorLegend traces={ACCEL_TRACES} />
+                      </span>
+                    }
+                  >
+                    <SensorChart
+                      xs={sensors.xs}
+                      traces={ACCEL_TRACES.map((t) => ({ ...t, ys: sensors[t.channel] }))}
+                      rev={sensors.rev}
+                      unit=" m/s²"
+                      signed
+                      minSpan={4}
+                      windowSec={SENSOR_WINDOW_SEC}
+                    />
                   </ChartCard>
                 </div>
               </div>
@@ -110,7 +253,9 @@ function App() {
           </main>
         )}
 
-        {view === "log" && <LogView telemetry={telemetry} />}
+        {view === "log" && <LogView log={log} />}
+
+        {view === "flights" && <FlightsView />}
 
         {view === "settings" && <SettingsView telemetry={telemetry} alarm={alarm} />}
       </div>

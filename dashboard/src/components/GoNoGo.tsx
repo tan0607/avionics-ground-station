@@ -5,7 +5,7 @@
  * OK→OPEN and pyro SAFE→FIRED), so a deploy is impossible to miss.
  */
 import { Card } from "@/components/ui/card"
-import type { TelemetryFrame } from "@/lib/protocol"
+import { Flag, isFlagKnown, type TelemetryFrame } from "@/lib/protocol"
 import { StatusLight, type LightState } from "./StatusLight"
 
 interface Row {
@@ -14,28 +14,48 @@ interface Row {
   detail: string
 }
 
+const UNKNOWN: Omit<Row, "label"> = { state: "idle", detail: "—" }
+
 function rows(frame: TelemetryFrame | null): Row[] {
-  if (!frame) {
-    return [
-      { label: "Continuity", state: "idle", detail: "—" },
-      { label: "Pyro", state: "idle", detail: "—" },
-      { label: "SD Log", state: "idle", detail: "—" },
-      { label: "Armed", state: "idle", detail: "—" },
-    ]
-  }
+  // A flag the downlink does not carry is unknown, not safe and not failed. The
+  // MRCC text format carries none of these four, and rendering its zeros would
+  // put OPEN continuity and a FAILED SD card on the safety panel — two alarms
+  // nobody raised, on the one panel that must never cry wolf.
+  const known = (mask: number) => isFlagKnown(frame, mask)
   return [
     {
       label: "Continuity",
-      state: frame.continuity ? "go" : "nogo",
-      detail: frame.continuity ? "OK" : "OPEN",
+      ...(known(Flag.CONTINUITY)
+        ? {
+            state: frame!.continuity ? "go" : "nogo",
+            detail: frame!.continuity ? "OK" : "OPEN",
+          }
+        : UNKNOWN),
     },
     {
       label: "Pyro",
-      state: frame.pyroFired ? "caution" : "idle",
-      detail: frame.pyroFired ? "FIRED" : "SAFE",
+      ...(known(Flag.PYRO_FIRED)
+        ? {
+            state: frame!.pyroFired ? "caution" : "idle",
+            detail: frame!.pyroFired ? "FIRED" : "SAFE",
+          }
+        : UNKNOWN),
     },
-    { label: "SD Log", state: frame.sdOk ? "go" : "nogo", detail: frame.sdOk ? "OK" : "FAIL" },
-    { label: "Armed", state: frame.armed ? "caution" : "idle", detail: frame.armed ? "ARMED" : "SAFE" },
+    {
+      label: "SD Log",
+      ...(known(Flag.SD_OK)
+        ? { state: frame!.sdOk ? "go" : "nogo", detail: frame!.sdOk ? "OK" : "FAIL" }
+        : UNKNOWN),
+    },
+    {
+      label: "Armed",
+      ...(known(Flag.ARMED)
+        ? {
+            state: frame!.armed ? "caution" : "idle",
+            detail: frame!.armed ? "ARMED" : "SAFE",
+          }
+        : UNKNOWN),
+    },
   ]
 }
 

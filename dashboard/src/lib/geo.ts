@@ -7,7 +7,7 @@
  * precision buys nothing at this range and adds iteration + failure modes.
  *
  * Bearing is TRUE north (°T). If you navigate with a handheld magnetic compass,
- * apply the local declination (KL ≈ 0° in 2026, so true ≈ magnetic here):
+ * apply the local declination (Perak Tengah ≈ 0° in 2026, so true ≈ magnetic here):
  * magnetic = true − declinationEast.
  */
 

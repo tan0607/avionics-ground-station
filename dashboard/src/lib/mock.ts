@@ -62,6 +62,13 @@ export class MockFlightSim {
   private h = 0 // altitude AGL, m
   private v = 0 // vertical speed, m/s
   private tilt = 1
+  // Roll about the body axis — only used to smear the tilt into the ax/ay pair
+  // so the two lateral traces are distinguishable rather than identical.
+  private spin = 0
+  // Vertical acceleration of the LAST step, m/s^2. Kept because an accelerometer
+  // measures specific force (a + g), so the body axes have to be derived from
+  // the acceleration the sim actually applied, not from the velocity.
+  private aVert = 0
   private vbat = 8.0
   private seq = 0
   private pyroFired = false
@@ -87,8 +94,10 @@ export class MockFlightSim {
   }
 
   private advance(dt: number) {
+    const v0 = this.v
     this.missionT += dt
     this.phaseT += dt
+    this.spin += 1.7 * dt
     this.vbat = Math.max(7.4, this.vbat - 0.0009 * dt * (this.phase === FlightState.PAD ? 0.3 : 1))
 
     switch (this.phase) {
@@ -153,6 +162,8 @@ export class MockFlightSim {
         break
     }
 
+    this.aVert = dt > 0 ? (this.v - v0) / dt : 0
+
     // downrange drift only while airborne
     if (this.phase !== FlightState.PAD && this.phase !== FlightState.LANDED) {
       this.lat += (this.windN * dt) / METERS_PER_DEG_LAT
@@ -172,11 +183,37 @@ export class MockFlightSim {
     this.h = 0
     this.v = 0
     this.tilt = 1
+    this.aVert = 0
     this.pyroFired = false
     this.lat = LAUNCH_SITE.lat
     this.lon = LAUNCH_SITE.lon
     // seq + vbat intentionally persist across the loop (a fresh "flight",
     // same radio session) so link stats stay continuous.
+  }
+
+  /**
+   * Body-frame accelerations, m/s^2 — what an onboard IMU would report.
+   *
+   * An accelerometer reads SPECIFIC FORCE, not acceleration: at rest it reads
+   * +g on whichever axis points up, and in free fall it reads zero. So the
+   * magnitude is the sim's vertical acceleration plus g, projected onto the
+   * body axes through the tilt the sim is already tracking (plus a slow roll,
+   * so ax and ay are not the same trace drawn twice).
+   *
+   * That projection is the exact inverse of mrcc.tilt_from_accel, which is the
+   * point: the mock's tilt_deg and its AX/AY/AZ tell the same story, the way a
+   * real vehicle's would. The alternative — leaving `extra` empty — renders the
+   * accel panel blank in `vite dev`, which is indistinguishable from a bug.
+   */
+  private accel(): { AX: number; AY: number; AZ: number } {
+    const f = this.aVert + G
+    const tiltRad = (this.tilt * Math.PI) / 180
+    const lateral = f * Math.sin(tiltRad)
+    return {
+      AX: Math.round((lateral * Math.cos(this.spin) + gaussian(0.05)) * 100) / 100,
+      AY: Math.round((lateral * Math.sin(this.spin) + gaussian(0.05)) * 100) / 100,
+      AZ: Math.round((f * Math.cos(tiltRad) + gaussian(0.05)) * 100) / 100,
+    }
   }
 
   private frame(): WireFrame {
@@ -207,6 +244,10 @@ export class MockFlightSim {
       // condition, not something to fake into the demo stream. To exercise the
       // health panel, clear a bit here (e.g. `HEALTH_ALL_OK & ~Health.BARO`).
       health: HEALTH_ALL_OK,
+      // Fields the protocol has no slot for. The mock carries the accel axes
+      // because the console plots them; the rest of what a real MRCC frame
+      // ships (pressure, heading, body rates) is not simulated.
+      extra: this.accel(),
     }
   }
 }

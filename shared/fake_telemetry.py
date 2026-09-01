@@ -30,8 +30,10 @@ HZ = 4
 DT = 1.0 / HZ
 G = 9.81
 
-# Launch site (Selangor, MY) -- matches the DESIGN_SPECS map example.
-LAT0, LON0 = 3.2437, 101.7061
+# Launch site -- MRCC 2026 Zon Tengah pad, in the FELCRA Seberang Perak paddy
+# scheme (Perak Tengah, MY). Keep in step with LAUNCH_SITE in
+# dashboard/src/lib/protocol.ts; the map centres on that one.
+LAT0, LON0 = 4.0986, 100.9505
 WIND_E, WIND_N = 4.0, 1.5            # steady wind drift, m/s (east, north)
 
 # Flight-profile knobs (these give a ~1390 m apogee, ~109 s flight).

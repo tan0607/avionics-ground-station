@@ -25,3 +25,7 @@ dashboard/dist/
 # Flight data — runtime session logs (raw.log/CSVs), regenerable, can get large.
 # Archive flights/ separately rather than committing per-run data.
 flights/
+
+# Knowledge-graph output from the graphify tool. ~6 MB, regenerable, and not
+# part of the ground station.
+graphify-out/
