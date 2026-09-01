@@ -1,18 +1,58 @@
-// onboard_tx.cpp -- ONBOARD telemetry transmitter (Target 2).
-//
-// STALE TWIN: firmware/arduino/E32Transmitter/E32Transmitter.ino was the
-// Arduino-IDE copy of this file back when the radio was an EBYTE E32. It has NOT
-// been ported to the SX1278 and will not talk to the current bridge. Flash this
-// target, not that sketch, until it is either updated or deleted.
-//
+/*
+  ==========================================================
+  E32 TRANSMITTER -- rocket-side telemetry downlink
+  ESP32-S3 + ICM-20948 + BMP280 + NEO-M8N  ->  E32 LoRa
+  ==========================================================
+  The Arduino-IDE twin of firmware/src/onboard_tx.cpp. Same pins, same 32-byte
+  frame, same fault isolation -- the only difference is that this one opens in
+  the IDE with no PlatformIO involved. Either one talks to E32Receiver and to
+  the Python ground station; do not run both on the same board.
+
+  KEPT IN STEP BY HAND. sync_headers.sh guards the copied libraries in this
+  folder, but it cannot guard this file against onboard_tx.cpp -- the two have
+  different opening comments, so a byte-compare would always fail. Change the
+  sensor logic in one and port it to the other in the same commit, or one board
+  will fly code the other has never seen.
+
+  ----------------------------------------------------------
+  BEFORE THE FIRST COMPILE -- install four libraries
+  ----------------------------------------------------------
+  Tools > Manage Libraries, then search and install:
+      SparkFun 9DoF IMU Breakout - ICM 20948   (by SparkFun)
+      Adafruit BMP280 Library                  (by Adafruit)
+      Adafruit Unified Sensor                  (by Adafruit -- BMP280 needs it)
+      TinyGPSPlus                              (by Mikal Hart)
+  The IDE offers to pull Adafruit's dependencies for you; say yes.
+
+  Board: Tools > Board > esp32 > "ESP32S3 Dev Module".
+  Serial Monitor at 115200. If nothing prints, set
+  Tools > USB CDC On Boot > Enabled -- on the S3, `Serial` is USB.
+
+  ----------------------------------------------------------
+  THE OTHER FILES IN THIS FOLDER ARE COPIES. DO NOT EDIT THEM.
+  ----------------------------------------------------------
+  The Arduino IDE compiles exactly one directory, so TelemPacket.h, E32.*,
+  Subsystem.* and I2CRecover.* are duplicated here from firmware/lib/. Editing a
+  copy makes this board disagree with the ground station about what byte 22
+  means. Change the original under firmware/lib/, then run
+      ./firmware/arduino/sync_headers.sh
+  ==========================================================
+*/
+
+// This sketch is ESP32-only, and not by accident: it needs a second hardware
+// UART for the GPS (Serial2) on top of the one the E32 uses, remappable I2C
+// pins, and ~330 kB of flash. An Uno has one UART and 32 kB. Porting means
+// SoftwareSerial for the GPS, which cannot receive while it transmits.
+#if !defined(ARDUINO_ARCH_ESP32)
+  #error "E32Transmitter requires an ESP32 (S3 flight computer). Select an ESP32 board."
+#endif
+
 // Runs on the rocket's ESP32-S3 flight computer. Every 250 ms (4 Hz) it packs the
-// current flight state into the shared 32-byte frame and hands it to a bare
-// SX1278 (Ra-02) over SPI. Framing + CRC come from lib/TelemPacket (proven
+// current flight state into the shared 32-byte frame and hands it to the E32 for a
+// 2.4k-air-rate downlink. Framing + CRC come from lib/TelemPacket (proven
 // byte-for-byte identical to shared/protocol/packet.py by test/packet_check.cpp);
-// the radio settings come from lib/LoRaLink -- the ONE place the ground station
-// and this file agree on frequency/SF/bandwidth, so they cannot drift apart.
-// Per-peripheral fault isolation comes from lib/Subsystem (proven by
-// test/subsystem_check.cpp).
+// the AUX-safe write comes from lib/E32; per-peripheral fault isolation comes from
+// lib/Subsystem (proven by test/subsystem_check.cpp).
 //
 // FAULT ISOLATION -- the rule this file enforces:
 //   No single peripheral can stop the vehicle booting or transmitting.
@@ -22,42 +62,39 @@
 // never a blanket "AV FAILED". Dead peripherals are re-init'd every ~2 s, so a
 // brownout that clears recovers itself mid-flight.
 //
-// Air-time budget: 32 B at SF7 / BW125 / CR4-5 is ~72 ms on air, against the
-// 250 ms window -- about 29% duty. That is a real improvement on the E32's 2.4k
-// air rate (~107 ms, and tight), and it is why the transmit below can afford to
-// drop a frame rather than wait. Raising the spreading factor for range spends
-// this margin fast: SF9 costs ~247 ms and would not fit the window at all.
+// Air-time budget: 32 B at 2.4 kbps ~= 107 ms on air (more with FEC). That fits the
+// 250 ms window and the ~150 B/s link budget (GROUND_STATION_PLAN.md §3): 32 B x 4 Hz
+// = 128 B/s. It IS tight -- hence the AUX-with-timeout drop below rather than a stall.
 // The health byte rides in an existing packet byte, so none of this costs air time.
 #include <Arduino.h>
 #include <Wire.h>
 #include <math.h>
-#include "LoRaLink.h"
+#include "E32.h"
 #include "TelemPacket.h"
 #include "Subsystem.h"
 #include "I2CRecover.h"
 
-// Flight sensors. All three are Arduino-framework libraries pulled in by
-// lib_deps in platformio.ini (env:onboard_tx) -- run `pio pkg install -e
-// onboard_tx` once with a network before the first offline build.
+// Flight sensors -- install these from Tools > Manage Libraries (see the header).
 #include "ICM_20948.h"          // SparkFun ICM-20948 (accel + gyro + mag)
 #include <Adafruit_BMP280.h>    // barometric altimeter
 #include <TinyGPS++.h>          // NEO-M8N NMEA parser
 
 // ---- pin map (ESP32-S3 flight computer) ------------------------------------
-// The radio sits on 10-15, which is the S3's own default FSPI bus (SS=10, MOSI=11,
-// SCK=12, MISO=13) plus two plain GPIOs. That is not a free choice on this board:
-//   - GPIO26-32 are the SPI flash / PSRAM pins; driving them hangs the chip. So
-//     the ESP32-*classic* pin map the bridge uses cannot be reused here.
-//   - GPIO17/18 belong to the NEO-M8N, GPIO8/9 to the I2C sensors, GPIO19/20 to
-//     USB. 10-15 is the contiguous block that collides with none of them -- the
-//     same block the E32 occupied, so the harness footprint is unchanged.
-static const int PIN_LORA_NSS  = 10;
-static const int PIN_LORA_MOSI = 11;
-static const int PIN_LORA_SCK  = 12;
-static const int PIN_LORA_MISO = 13;
-static const int PIN_LORA_RST  = 14;
-static const int PIN_LORA_DIO0 = 15;
-static const int PIN_LED       = 2;   // TX activity LED (generic GPIO; no-op if unused)
+// CHANGED from the pre-sensor version of this file, for two reasons you cannot
+// work around by rewiring:
+//   1. The old E32 map (M0=25, M1=26, AUX=27) is an ESP32-*classic* map. On the
+//      S3, GPIO26-32 are the SPI flash / PSRAM pins -- driving them either does
+//      nothing or hangs the chip. The E32 control pins move to 10/11/12.
+//   2. The old E32 UART (RX=16, TX=17) collides with the GPS: the bench wiring
+//      has the NEO-M8N on GPIO17/18. The E32 UART moves to 13/14 and the GPS
+//      keeps 17/18, so the two radios never share a pin.
+// The I2C bus is 8/9 to match the bench wiring (ICM-20948 + BMP280 in parallel).
+static const int PIN_E32_M0  = 10;
+static const int PIN_E32_M1  = 11;
+static const int PIN_E32_AUX = 12;
+static const int PIN_E32_RX  = 13;  // ESP32 RX1 <- E32 TXD
+static const int PIN_E32_TX  = 14;  // ESP32 TX1 -> E32 RXD
+static const int PIN_LED     = 2;   // TX activity LED (generic GPIO; no-op if unused)
 static const int PIN_I2C_SDA = 8;   // shared sensor bus (baro + IMU)
 static const int PIN_I2C_SCL = 9;
 static const int PIN_GPS_RX  = 17;  // ESP32 RX2 <- NEO-M8N TXD
@@ -91,12 +128,10 @@ static const uint32_t GPS_FIX_AGE_MS   = 3000;  // older than this = not a fix
 static const uint16_t GPS_DRAIN_BUDGET = 512;
 
 // ---- link + timing --------------------------------------------------------
+static const uint32_t E32_UART_BAUD    = 9600;   // must match the E32's configured UART baud
 static const uint32_t TX_PERIOD_MS     = 250;    // 4 Hz
+static const uint32_t TX_AUX_TIMEOUT_MS = 200;   // < period: drop the frame if radio still busy
 static const uint32_t LED_PULSE_MS     = 30;
-// No air-rate or UART baud here any more: with a bare SX1278 there is no UART to
-// the radio, and every RF parameter lives in lib/LoRaLink so both ends share one
-// copy. A 32-byte frame at those settings is ~72 ms on air, well inside the 250 ms
-// window (the arithmetic is in LoRaLink.h).
 
 // I2C transaction timeout. NOT optional: bus recovery frees a stuck line, but only
 // this bounds a single transfer. Without it a wedged slave hangs Wire -- and a hung
@@ -104,13 +139,13 @@ static const uint32_t LED_PULSE_MS     = 30;
 static const uint16_t I2C_TIMEOUT_MS   = 25;
 static const uint32_t I2C_CLOCK_HZ     = 400000;  // fast mode; both sensors support it
 
-// Radio bring-up result, checked before every transmit. There is no config-mode
-// escape hatch to keep here: an SX1278 has no stored parameters to reprogram, so
-// the old E32_RUN_CONFIG one-shot has nothing left to do.
-static bool g_radio_up = false;
+// Set to 1, flash once to program the E32 (9600 UART / 2.4k air rate), then set back
+// to 0. The airborne and ground E32s must share these params + channel.
+#define E32_RUN_CONFIG 0
 
-// Sensors. The GPS keeps Serial2 (the radio no longer uses a UART at all, but
-// there is no reason to move a working harness onto Serial1).
+E32 radio(Serial1, PIN_E32_M0, PIN_E32_M1, PIN_E32_AUX);
+
+// Sensors. Serial1 belongs to the E32, so the GPS gets Serial2.
 static ICM_20948_I2C    imu;
 static Adafruit_BMP280  baro(&Wire);
 static TinyGPSPlus      gps;
@@ -516,23 +551,12 @@ void setup() {
 
   i2cReclaim();                                           // opens Wire on 8/9, 400 kHz, bounded
 
-  // Radio bring-up follows the same rule as the sensors: a failure is reported
-  // and recorded, never fatal. A vehicle with a dead downlink still boots, still
-  // runs its state machine, and still logs -- it just cannot tell you about it.
-  g_radio_up = loraLinkBegin(PIN_LORA_NSS, PIN_LORA_RST, PIN_LORA_DIO0,
-                             PIN_LORA_SCK, PIN_LORA_MISO, PIN_LORA_MOSI);
-  // Print the channel, not just "up". Two vehicles are distinguished ONLY by the
-  // build env (platformio.ini), so a board flashed from the wrong one looks and
-  // behaves perfectly until the other rocket powers on. This line is the single
-  // place that mistake is visible on the bench -- check it before you close the
-  // airframe. The GS bridge cannot print its own: bridge.cpp emits radio bytes
-  // and nothing else, so a banner there would land in raw.log.
-  if (g_radio_up) {
-    Serial.printf("LoRa: up  ch=%.3f MHz  SF%d BW%ldk sync=0x%02X\n",
-                  LORA_FREQ_HZ / 1e6, LORA_SF, LORA_BW_HZ / 1000, LORA_SYNCWORD);
-  } else {
-    Serial.println("LoRa: FAILED (SX1278 silent on SPI -- wiring/power)");
-  }
+  radio.begin(PIN_E32_RX, PIN_E32_TX, E32_UART_BAUD);     // opens Serial1, enters NORMAL
+
+#if E32_RUN_CONFIG
+  bool ok = radio.configure();                            // 9600 UART / 2.4k air rate
+  Serial.println(ok ? "E32 configure: OK" : "E32 configure: FAILED (check wiring/AUX)");
+#endif
 
   // Bring up every peripheral. Failures are recorded, never fatal -- begin()
   // always returns, even with all six dead.
@@ -591,15 +615,11 @@ void loop() {
     uint8_t frame[TELEM_PACKET_SIZE];
     telem_build_frame(&body, frame);
 
-    // beginPacket() returns 0 if the previous frame is still going out, which is
-    // the same contract the old AUX check gave us: on success advance seq so the
-    // ground station's loss counter measures RF loss only; on a drop hold seq and
-    // retry next cycle. endPacket(true) is the ASYNC form -- it hands the frame to
-    // the radio and returns immediately instead of blocking for the ~72 ms of air
-    // time, so a transmit can never stall gps_drain() or the sensor service pass.
-    if (g_radio_up && LoRa.beginPacket()) {
-      LoRa.write(frame, TELEM_PACKET_SIZE);
-      LoRa.endPacket(true);
+    // AUX-disciplined write: writeFrame() waits for AUX HIGH (timeout) and returns
+    // false without writing if the radio is still busy. On success we advance seq so
+    // the ground station's loss counter measures RF loss only; on a drop we hold seq
+    // and retry next cycle -- we NEVER blind-write the E32.
+    if (radio.writeFrame(frame, TELEM_PACKET_SIZE, TX_AUX_TIMEOUT_MS)) {
       g_seq++;
       digitalWrite(PIN_LED, HIGH);
       g_led_off_at = now + LED_PULSE_MS;
@@ -615,8 +635,7 @@ void loop() {
                     (unsigned)body.gps_sats, (unsigned)body.gps_fix,
                     g_imu_dbg.heading_deg, body.vbat_dv / 10.0, health);
     } else {
-      Serial.println(g_radio_up ? "SKIP: radio still transmitting -- frame dropped, seq held"
-                                : "SKIP: radio down -- frame dropped, seq held");
+      Serial.println("SKIP: AUX busy -- frame dropped, seq held");
     }
   }
 
