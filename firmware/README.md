@@ -78,12 +78,13 @@ happened:
 ### GS CHANNEL=B FREQ=434.100MHz PREV_PKTS=1834 ###
 ```
 
-**Cut a new session or a new flight when you switch.** The two rockets count
-`PKT` independently, so the ground station sees a jump. `backend/loss.py` treats
-a forward jump over `RESET_GAP` (1000) as a restart and invents no loss — but a
-jump *under* 1000 is counted as lost packets, and which one you get depends on
-the order you powered the two rockets up. Starting a fresh session sidesteps the
-question entirely.
+**Loss counters restart with the link, automatically.** The two rockets number
+their packets independently, so a switch is a `seq` jump — and left alone, a jump
+under `LossTracker`'s `RESET_GAP` books hundreds of losses that never happened,
+while one over it re-baselines but keeps the first rocket in the denominator
+forever. Neither is a number to read during a flight, so the backend resets the
+counters when it sees the channel change and notes it in `mission.log`. The
+per-flight CSVs still carry `seq`, so anything finer can be recomputed later.
 
 You only need a second receiver box if you want to watch both rockets at the
 same time. One SX1278 tunes one frequency at a time; there is no scan mode that

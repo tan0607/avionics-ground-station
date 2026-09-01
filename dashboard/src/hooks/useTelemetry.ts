@@ -22,10 +22,12 @@
  */
 import { useEffect, useRef, useState } from "react"
 import {
+  Flag,
   FlightState,
   LINK_STALE_MS,
   PACKET_INTERVAL_MS,
   isDescending,
+  isFlagKnown,
   normalizeFrame,
   type TelemetryFrame,
   type WireFrame,
@@ -69,10 +71,21 @@ export interface ChartSeries {
   rev: number
 }
 
+/**
+ * The flags the no-deploy alarm has to read. Exported because the Settings card
+ * shows the alarm as unavailable on a downlink that carries neither, and it has
+ * to test the same bits this hook does.
+ */
+export const NO_DEPLOY_FLAGS = Flag.PYRO_FIRED | Flag.CONTINUITY
+
 export interface Alarms {
   /** No packet within the stale window — the operator has lost the vehicle. */
   linkStale: boolean
-  /** Past apogee / descending but no pyro event + continuity still closed. */
+  /**
+   * Past apogee / descending but no pyro event + continuity still closed.
+   * Always false on a downlink that does not report pyro + continuity: an
+   * alarm that cannot be evaluated must stay silent, not guess.
+   */
   noDeploy: boolean
 }
 
@@ -228,8 +241,19 @@ export function useTelemetry(): TelemetryState {
           ? (frame.hostTime - launchHostRef.current) / 1000
           : null
 
+      // Only evaluable on a downlink that actually reports the two flags. The
+      // MRCC text format carries neither, so `pyroFired`/`continuity` arrive as
+      // the coerceBool default rather than as measurements — and this test read
+      // that default as fact. It happened to land on `false` (no alarm), the
+      // right answer for the wrong reason: one flipped default away from an
+      // unsilenceable no-deploy alarm on every descent. GoNoGo gates its
+      // Continuity/Pyro rows on the same mask; this is the audible half of it.
       const noDeploy = Boolean(
-        frame && isDescending(frame.flightState) && !frame.pyroFired && frame.continuity,
+        frame &&
+          isFlagKnown(frame, NO_DEPLOY_FLAGS) &&
+          isDescending(frame.flightState) &&
+          !frame.pyroFired &&
+          frame.continuity,
       )
 
       setSnapshot({

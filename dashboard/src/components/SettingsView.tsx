@@ -17,7 +17,8 @@ import { apiUrl } from "@/lib/api"
 import { useBackendStats, type BackendSource, type StatsState } from "@/hooks/useBackendStats"
 import { useGroundStation } from "@/hooks/useGroundStation"
 import { fmtPercent } from "@/lib/format"
-import type { TelemetryState } from "@/hooks/useTelemetry"
+import { NO_DEPLOY_FLAGS, type TelemetryState } from "@/hooks/useTelemetry"
+import { isFlagKnown } from "@/lib/protocol"
 import type { AlarmSound } from "@/hooks/useAlarmSound"
 import { ROW_CAP_OPTIONS, useSettings } from "@/hooks/useSettings"
 import { Card } from "@/components/ui/card"
@@ -187,8 +188,15 @@ function ConnectionCard({ telemetry, stats }: { telemetry: TelemetryState; stats
   )
 }
 
-function AlarmsCard({ alarm }: { alarm: AlarmSound }) {
+function AlarmsCard({ telemetry, alarm }: { telemetry: TelemetryState; alarm: AlarmSound }) {
   const { settings, update } = useSettings()
+  // The no-deploy alarm reads pyro + continuity, and the MRCC downlink reports
+  // neither — so on that link the alarm can never fire, whatever this switch
+  // says. An armed toggle for an alarm that cannot sound is a promise of cover
+  // the console does not have, so the row says so as soon as a frame proves it.
+  // Before the first frame nothing is known yet: leave it armed rather than
+  // greying out an alarm that may well work.
+  const noDeployBlind = telemetry.frame != null && !isFlagKnown(telemetry.frame, NO_DEPLOY_FLAGS)
   return (
     <SettingCard title="Alarms & Audio">
       <Row label="Buzzer" hint={alarm.supported ? "master audio switch" : "Web Audio unavailable"}>
@@ -197,8 +205,19 @@ function AlarmsCard({ alarm }: { alarm: AlarmSound }) {
       <Row label="Arm · Link stale" hint="beep when the link goes stale">
         <Toggle on={settings.alarms.linkStale} onChange={(linkStale) => update({ alarms: { linkStale } })} />
       </Row>
-      <Row label="Arm · No-deploy" hint="beep past apogee with no pyro">
-        <Toggle on={settings.alarms.noDeploy} onChange={(noDeploy) => update({ alarms: { noDeploy } })} />
+      <Row
+        label="Arm · No-deploy"
+        hint={
+          noDeployBlind
+            ? "unavailable — this downlink sends no pyro/continuity"
+            : "beep past apogee with no pyro"
+        }
+      >
+        <Toggle
+          on={settings.alarms.noDeploy && !noDeployBlind}
+          disabled={noDeployBlind}
+          onChange={(noDeploy) => update({ alarms: { noDeploy } })}
+        />
       </Row>
       <Row label="Test" hint="play a test beep + unlock audio">
         <Button variant="outline" size="sm" disabled={!alarm.supported} onClick={alarm.test}>
@@ -348,7 +367,7 @@ export function SettingsView({ telemetry, alarm }: { telemetry: TelemetryState; 
       <div className="mx-auto grid max-w-5xl grid-cols-1 gap-2 md:grid-cols-2">
         <ConnectionCard telemetry={telemetry} stats={stats} />
         <RadioChannelCard />
-        <AlarmsCard alarm={alarm} />
+        <AlarmsCard telemetry={telemetry} alarm={alarm} />
         <DisplayCard />
         <ExportCard telemetry={telemetry} stats={stats} />
       </div>

@@ -40,7 +40,7 @@ from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from shared.protocol import mrcc, packet
 
@@ -331,15 +331,31 @@ RECORDED_FLIGHT_FILES = (
 )
 
 
+# The flight slot of an archive route may also name the SESSION itself. A
+# session folder holds the same five durable files a flight does, so detail,
+# download and delete all work on one unchanged -- and a fixed "-" in that slot
+# cannot traverse anywhere, which is why it is a sentinel rather than the
+# session id repeated.
+SESSION_SELF = "-"
+
+
 def resolve_recorded_flight_dir(flights_root: Path, session_id: str,
                                 flight_name: str) -> Path | None:
-    """Resolve one archive directory without allowing traversal or symlinks."""
-    if not _SESSION_DIR_RE.fullmatch(session_id) or not _FLIGHT_DIR_RE.fullmatch(flight_name):
+    """Resolve one archive directory without allowing traversal or symlinks.
+
+    `flight_name` is either a flight-NN folder inside the session or
+    SESSION_SELF, which resolves to the session folder itself.
+    """
+    if not _SESSION_DIR_RE.fullmatch(session_id):
+        return None
+    if flight_name != SESSION_SELF and not _FLIGHT_DIR_RE.fullmatch(flight_name):
         return None
     root = flights_root.resolve()
     session = (root / session_id).resolve()
     if session.parent != root or not session.is_dir():
         return None
+    if flight_name == SESSION_SELF:
+        return session
     flight = (session / flight_name).resolve()
     if flight.parent != session or not flight.is_dir():
         return None
@@ -406,6 +422,178 @@ def delete_recorded_flight(flights_root: Path, session_id: str,
             "removed": removed, "freed_bytes": freed}
 
 
+# ----------------------------------------------------------------------------
+# Provenance -- what a recording IS
+# ----------------------------------------------------------------------------
+# `source.kind` has been written into every metadata.json since the first
+# session and was rendered nowhere, which is how a replay of a simulator run
+# came to be indistinguishable from a launch in the archive list. Three
+# outcomes, because three things can put bytes into a recording:
+#
+#     live    a radio was attached            (kind "serial")
+#     replay  an older raw.log was re-run     (kind "replay")
+#     sim     fake_telemetry generated it     (kind "fake")
+#
+# Derived here rather than in the dashboard so a script reading the archive and
+# the console looking at it can never disagree about which is which.
+_PROVENANCE_KIND = {"serial": "live", "replay": "replay", "fake": "sim"}
+
+
+def _origin_session(path: str) -> str | None:
+    """The session id a replay path points into, if it points into the archive.
+
+    A replay whose input is `flights/<session>/raw.log` is a re-run of a
+    recording that is still sitting next to it in the list. Naming the origin is
+    what stops the copy from competing with the capture -- these nest three deep
+    on this machine (a replay of a replay of a simulator run).
+    """
+    for part in reversed(PurePosixPath(path.replace("\\", "/")).parts):
+        if _SESSION_DIR_RE.fullmatch(part):
+            return part
+    return None
+
+
+def describe_provenance(source: object) -> dict:
+    """One archive row's origin, reduced to {kind, detail, origin}."""
+    if not isinstance(source, dict):
+        return {"kind": "unknown", "detail": "", "origin": None}
+    kind = _PROVENANCE_KIND.get(str(source.get("kind") or ""), "unknown")
+    detail, origin = "", None
+    if kind == "live":
+        detail = str(source.get("port") or "")
+    elif kind == "replay":
+        path = str(source.get("path") or "")
+        origin = _origin_session(path)
+        # A replay of something outside the archive (a scratch file, an SD card
+        # copy) still gets a name -- the basename, which is all there is.
+        detail = origin or PurePosixPath(path.replace("\\", "/")).name
+        if source.get("loop"):
+            detail = f"{detail} loop" if detail else "loop"
+    elif kind == "sim":
+        detail = "loop" if source.get("loop") else ""
+    return {"kind": kind, "detail": detail, "origin": origin}
+
+
+# ----------------------------------------------------------------------------
+# Session rows -- counted from the files, because metadata cannot say
+# ----------------------------------------------------------------------------
+# A session's metadata.json is written when the session OPENS. It never records
+# how much landed in it, and nothing closes it on a process that was killed, so
+# row counts have to come from the CSVs themselves. Counting is cheap once and
+# wasteful every five seconds, so it is memoised on (size, mtime): a closed
+# session is read exactly once no matter how often the archive is polled, and
+# the one file still growing re-reads only itself.
+_LINE_COUNT_CACHE: dict[str, tuple[int, float, int]] = {}
+
+
+def _csv_data_rows(path: Path) -> int:
+    """Data rows in a CSV -- newlines minus the header line."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return 0
+    key = str(path)
+    cached = _LINE_COUNT_CACHE.get(key)
+    if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime:
+        return cached[2]
+    lines = 0
+    try:
+        with path.open("rb") as fh:
+            while chunk := fh.read(1 << 20):
+                lines += chunk.count(b"\n")
+    except OSError:
+        return 0
+    rows = max(0, lines - 1)
+    _LINE_COUNT_CACHE[key] = (stat.st_size, stat.st_mtime, rows)
+    return rows
+
+
+def _newest_mtime(directory: Path) -> float | None:
+    newest = None
+    for name in RECORDED_FLIGHT_FILES:
+        try:
+            mtime = (directory / name).stat().st_mtime
+        except OSError:
+            continue
+        newest = mtime if newest is None else max(newest, mtime)
+    return newest
+
+
+def _recorded_session_summary(directory: Path, flight_count: int) -> dict | None:
+    """One archive row for a SESSION folder, shaped exactly like a flight row.
+
+    A session used to be discoverable only as the parent of a declared flight,
+    so a session nobody pressed REC in was invisible in the console while
+    holding every byte it captured -- 27 of the 29 folders on this machine,
+    including the two longest serial captures. It is the same five files either
+    way, so it is the same row type, addressed through SESSION_SELF.
+
+    `duration_s` is the last write minus the creation time, because a session
+    has no stop record: the process that would have written one is the process
+    that exited.
+    """
+    try:
+        raw = json.loads((directory / "metadata.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    started = raw.get("created_utc") if isinstance(raw.get("created_utc"), str) else None
+    duration_s = None
+    newest = _newest_mtime(directory)
+    if started and newest is not None:
+        try:
+            began = datetime.fromisoformat(started).timestamp()
+            duration_s = max(0.0, newest - began)
+        except ValueError:
+            duration_s = None
+
+    try:
+        raw_bytes = (directory / "raw.log").stat().st_size
+    except OSError:
+        raw_bytes = 0
+
+    return {
+        "session": directory.name,
+        "flight": SESSION_SELF,
+        "kind": "session",
+        "flight_count": flight_count,
+        "path": str(directory),
+        "label": "",
+        "started_utc": started,
+        "stopped_utc": None,
+        "duration_s": duration_s,
+        "stop_reason": None,
+        # Disk cannot tell which session a live backend still holds open; the
+        # /flights route marks that one, because it is the only caller that
+        # knows.
+        "recording": False,
+        "rows": _csv_data_rows(directory / "telemetry.csv"),
+        "events": _csv_data_rows(directory / "events.csv"),
+        "raw_bytes": raw_bytes,
+        "source": raw.get("source") if isinstance(raw.get("source"), dict) else {},
+        "packet": raw.get("packet") if isinstance(raw.get("packet"), dict) else {},
+        "provenance": describe_provenance(raw.get("source")),
+        "files": _durable_files(directory),
+    }
+
+
+def _durable_files(directory: Path) -> list[dict]:
+    """The durable five that are actually present, in UI/download order."""
+    files = []
+    for name in RECORDED_FLIGHT_FILES:
+        path = (directory / name).resolve()
+        if path.parent != directory or not path.is_file():
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        files.append({"name": name, "bytes": size})
+    return files
+
+
 def _recorded_flight_summary(directory: Path, session_id: str) -> dict | None:
     """Read one trustworthy archive row; malformed metadata makes it invisible."""
     try:
@@ -423,22 +611,13 @@ def _recorded_flight_summary(directory: Path, session_id: str) -> dict | None:
     except (TypeError, ValueError):
         return None
 
-    files = []
-    for name in RECORDED_FLIGHT_FILES:
-        path = (directory / name).resolve()
-        if path.parent != directory or not path.is_file():
-            continue
-        try:
-            size = path.stat().st_size
-        except OSError:
-            continue
-        files.append({"name": name, "bytes": size})
-
     # The folder names are the route identity. Metadata values remain useful
     # display facts, but a copied/stale metadata file cannot redirect a download.
     return {
         "session": session_id,
         "flight": directory.name,
+        "kind": "flight",
+        "flight_count": 0,
         "path": str(directory),
         "label": str(raw.get("label") or ""),
         "started_utc": raw.get("started_utc") if isinstance(raw.get("started_utc"), str) else None,
@@ -451,45 +630,64 @@ def _recorded_flight_summary(directory: Path, session_id: str) -> dict | None:
         "raw_bytes": raw_bytes,
         "source": raw.get("source") if isinstance(raw.get("source"), dict) else {},
         "packet": raw.get("packet") if isinstance(raw.get("packet"), dict) else {},
-        "files": files,
+        "provenance": describe_provenance(raw.get("source")),
+        "files": _durable_files(directory),
     }
 
 
-def recorded_flights(flights_root: Path) -> list[dict]:
-    """Discover every operator-declared flight currently present on disk.
+def _newest_first(rows: list[dict]) -> list[dict]:
+    # ISO UTC timestamps sort chronologically as strings. Folder identities are
+    # stable tie-breakers for old/incomplete metadata without a start time.
+    rows.sort(
+        key=lambda f: (str(f.get("started_utc") or ""), f["session"], f["flight"]),
+        reverse=True,
+    )
+    return rows
 
-    Nothing here depends on SessionWriter's in-memory `flights` list, so the
-    portal remains an archive after the backend restarts.
+
+def recorded_archive(flights_root: Path) -> tuple[list[dict], list[dict]]:
+    """Everything on disk: (sessions, flights), newest first.
+
+    One walk produces both, because a session's flight count is a fact about
+    the same directory listing that finds the flights. Nothing here depends on
+    SessionWriter's in-memory state, so the portal remains a complete archive
+    after the backend restarts -- and now covers the sessions nobody pressed
+    REC in, which is most of them.
     """
     root = flights_root.resolve()
     if not root.is_dir():
-        return []
-    found: list[dict] = []
+        return [], []
+    sessions: list[dict] = []
+    flights: list[dict] = []
     try:
-        sessions = list(root.iterdir())
+        entries = list(root.iterdir())
     except OSError:
-        return []
-    for session in sessions:
+        return [], []
+    for session in entries:
         if not _SESSION_DIR_RE.fullmatch(session.name) or not session.is_dir():
             continue
         try:
-            entries = list(session.iterdir())
+            children = list(session.iterdir())
         except OSError:
             continue
-        for entry in entries:
-            directory = resolve_recorded_flight_dir(root, session.name, entry.name)
+        in_session: list[dict] = []
+        for child in children:
+            directory = resolve_recorded_flight_dir(root, session.name, child.name)
             if directory is None:
                 continue
             summary = _recorded_flight_summary(directory, session.name)
             if summary is not None:
-                found.append(summary)
-    # ISO UTC timestamps sort chronologically as strings. Folder identities are
-    # stable tie-breakers for old/incomplete metadata without a start time.
-    found.sort(
-        key=lambda f: (str(f.get("started_utc") or ""), f["session"], f["flight"]),
-        reverse=True,
-    )
-    return found
+                in_session.append(summary)
+        flights.extend(in_session)
+        row = _recorded_session_summary(session.resolve(), len(in_session))
+        if row is not None:
+            sessions.append(row)
+    return _newest_first(sessions), _newest_first(flights)
+
+
+def recorded_flights(flights_root: Path) -> list[dict]:
+    """Every operator-declared flight on disk. Sessions come from recorded_archive."""
+    return recorded_archive(flights_root)[1]
 
 
 def _tail_text_lines(path: Path, limit: int) -> dict:
@@ -523,6 +721,14 @@ def _tail_telemetry_rows(path: Path, limit: int) -> dict:
     return {"columns": columns, "rows": list(rows), "truncated": count > keep}
 
 
+def _flight_count(session_dir: Path) -> int:
+    try:
+        return sum(1 for e in session_dir.iterdir()
+                   if _FLIGHT_DIR_RE.fullmatch(e.name) and e.is_dir())
+    except OSError:
+        return 0
+
+
 def recorded_flight_detail(flights_root: Path, session_id: str, flight_name: str,
                            mission_lines: int = 120,
                            telemetry_rows: int = 40) -> dict | None:
@@ -530,7 +736,13 @@ def recorded_flight_detail(flights_root: Path, session_id: str, flight_name: str
     directory = resolve_recorded_flight_dir(flights_root, session_id, flight_name)
     if directory is None:
         return None
-    summary = _recorded_flight_summary(directory, session_id)
+    # A session's metadata.json is a different document from a flight's -- it
+    # has no label, no stop record and no row count -- so it is summarised by
+    # the function that knows how to count, not squeezed through the flight one.
+    if flight_name == SESSION_SELF:
+        summary = _recorded_session_summary(directory, _flight_count(directory))
+    else:
+        summary = _recorded_flight_summary(directory, session_id)
     if summary is None:
         return None
     return {

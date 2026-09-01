@@ -37,8 +37,9 @@ from .session import (
     MissionDeriver,
     MissionEvent,
     SessionWriter,
+    SESSION_SELF,
+    recorded_archive,
     recorded_flight_detail,
-    recorded_flights,
     resolve_recorded_flight_file,
 )
 from .sources import ByteSource, FakeSource, ReplaySource, SerialSource
@@ -162,14 +163,25 @@ class ChannelWatcher:
         self.channel: str | None = None
         self._buf = ""
 
-    def feed(self, chunk: bytes) -> None:
+    def feed(self, chunk: bytes) -> str | None:
+        """Absorb a chunk. Returns the new channel if this is a SWITCH, else None.
+
+        First contact (None -> "A") is not a switch, it is discovery, and the
+        caller must not treat it as one -- there is no previous link whose
+        statistics have just been invalidated.
+        """
+        switched = None
         self._buf += chunk.decode("utf-8", errors="replace")
         lines = self._buf.split("\n")
         self._buf = lines.pop()[-self.MAX_BUFFER:]
         for line in lines:
             m = _GS_CHANNEL_RE.search(line)
             if m:
-                self.channel = m.group(1).upper()
+                new = m.group(1).upper()
+                if self.channel is not None and new != self.channel:
+                    switched = new
+                self.channel = new
+        return switched
 
 
 class Runtime:
@@ -197,7 +209,24 @@ async def ingest(rt: Runtime, source: ByteSource) -> None:
     async for chunk in source.chunks():
         host_ms = int(time.time() * 1000)
         rt.session.write_raw(host_ms, chunk)          # raw first — never lose data
-        rt.gs.feed(chunk)                             # note any channel the receiver announces
+        # A channel change means the LINK changed, and loss counts a link. The two
+        # rockets number their packets independently, so carrying the old
+        # counters across the switch produces a figure that is about neither
+        # vehicle: a seq jump under LossTracker's RESET_GAP is booked as hundreds
+        # of lost packets that were never sent, and one over it re-baselines but
+        # leaves the earlier rocket's history in the denominator forever. Neither
+        # is a number an operator should be reading during a flight.
+        #
+        # So the statistics restart with the link. The per-flight CSVs still
+        # carry `seq`, so anything finer can be recomputed after the fact.
+        switched = rt.gs.feed(chunk)
+        if switched:
+            rt.loss = LossTracker()
+            rt.session.write_mission(MissionEvent(
+                host_ms, "link", "info", f"GROUND STATION -> ROCKET {switched}",
+                "loss counters restarted",
+            ))
+            print(f"[gs] channel now {switched} — loss counters reset", file=sys.stderr)
         for item in rt.parser.feed(chunk):            # resyncing framer, checksum/format-checked
             t, mf, known, fknown = split_frame(item)
             rt.frames += 1
@@ -563,11 +592,27 @@ def create_app(config: Config) -> FastAPI:
     # portal history, and a stopped flight stays downloadable indefinitely.
     @app.get("/flights")
     async def flights_index() -> JSONResponse:
-        flights = recorded_flights(config.flights_root)
+        """The whole archive: every session, and every flight declared inside one.
+
+        `flights` keeps its original meaning and shape. `sessions` is the half
+        the console could not see before -- a session with no flight folder was
+        unreachable from the UI while holding everything it captured.
+        """
+        sessions, flights = recorded_archive(config.flights_root)
+        # Disk cannot tell which session a running backend still holds open, and
+        # this is the only caller that knows. Marking it keeps the index from
+        # presenting the session being written right now as a finished one.
+        live = rt.session.session_id if rt.session else None
+        if live is not None:
+            for row in sessions:
+                if row["session"] == live:
+                    row["recording"] = True
         return JSONResponse({
             "root": str(config.flights_root.resolve()),
             "count": len(flights),
+            "session_count": len(sessions),
             "flights": flights,
+            "sessions": sessions,
         })
 
     @app.get("/flights/{session_id}/{flight_name}")
@@ -608,6 +653,15 @@ def create_app(config: Config) -> FastAPI:
                 and session_id == rt.session.session_id and flight_name == live.name):
             return JSONResponse(
                 {"error": "that flight is recording right now — stop it first"},
+                status_code=409,
+            )
+        # The session this backend is writing into has all five files open. It
+        # is never deletable from here, flight folder or not.
+        if (flight_name == SESSION_SELF and rt.session is not None
+                and session_id == rt.session.session_id):
+            return JSONResponse(
+                {"error": "this backend is recording into that session — "
+                          "stop the server first"},
                 status_code=409,
             )
         try:
