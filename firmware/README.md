@@ -44,6 +44,41 @@ Four boards, two settings, and they pair up:
 
 *One rocket, one letter, both its boards.*
 
+### One ground station for both rockets
+
+You do not need two receiver boxes. The ground station's channel is switchable
+at runtime from the serial monitor, so one box covers a whole launch day:
+
+| key | does |
+|---|---|
+| `A` | listen to rocket A (433.3 MHz) |
+| `B` | listen to rocket B (434.1 MHz) |
+| `?` | print the current channel, packet count and last RSSI/SNR |
+
+Both airframes can sit powered on the pad at once — they are on separate
+channels, so they do not collide and neither one interferes with the other. Fly
+A, then press `B` and fly B. No reflash, no reboot, and the backend's serial
+connection survives the switch. `VEHICLE` in the sketch is only the power-on
+default; set it to whichever rocket flies first.
+
+The switch prints a marker into the stream, so `raw.log` records when it
+happened:
+
+```
+### GS CHANNEL=B FREQ=434.100MHz PREV_PKTS=1834 ###
+```
+
+**Cut a new session or a new flight when you switch.** The two rockets count
+`PKT` independently, so the ground station sees a jump. `backend/loss.py` treats
+a forward jump over `RESET_GAP` (1000) as a restart and invents no loss — but a
+jump *under* 1000 is counted as lost packets, and which one you get depends on
+the order you powered the two rockets up. Starting a fresh session sidesteps the
+question entirely.
+
+You only need the second box if you want to watch both rockets at the same time.
+One SX1278 tunes one frequency at a time; there is no scan mode that would not
+drop packets while it looked away.
+
 ### Why two rockets cannot share a channel
 
 LoRa does not pair. A receiver decodes **every** packet whose
