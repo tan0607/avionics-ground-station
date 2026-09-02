@@ -1,12 +1,57 @@
 /**
- * Mission identity — one source of truth for the vehicle this console is flying.
+ * Mission identity — one source of truth for which rocket this console flies.
  *
- * It used to be a bare constant inside TopBar, which was fine while the only
- * thing that needed it was the header. Flight folders are named from it now, so
- * a mission rename has to reach the record on disk as well as the strip at the
- * top of the screen, and those must not be able to drift apart.
+ * It used to be a bare constant ("APEX-1") inside TopBar, which was fine while
+ * one box flew one vehicle. Two rockets fly now, each on its own radio channel,
+ * and the mission name is how the team refers to them: A1R is the vehicle on
+ * channel A, A2R the one on channel B.
+ *
+ * THE NAME AND THE CHANNEL ARE THE SAME FACT. Naming the mission and tuning the
+ * receiver used to be two unrelated actions — a constant in the source, and an
+ * A/B switch in Settings — so the console could sit there labelled one rocket
+ * while listening to the other, and a receiver on the wrong channel is not weak
+ * or garbled, it is SILENT. Pairing them here means picking the mission is
+ * picking the channel; there is no second place to get it wrong.
+ *
+ * Flight folders are named from the mission too, so the record on disk says
+ * which vehicle it came off.
  */
-export const MISSION = "APEX-1"
+
+/** The radio channels MRCC_GroundStation knows (firmware CHANNELS[], same keys). */
+export type ChannelId = "A" | "B"
+
+export interface Mission {
+  /** What the team calls this vehicle. */
+  name: string
+  /** The channel its rocket transmits on — the key the box takes over serial. */
+  channel: ChannelId
+}
+
+/**
+ * The flyable vehicles, in the order they appear in every picker.
+ *
+ * Adding a third rocket is this array plus a CHANNEL_C_HZ in the firmware —
+ * nothing in the UI counts to two.
+ */
+export const MISSIONS: readonly Mission[] = [
+  { name: "A1R", channel: "A" },
+  { name: "A2R", channel: "B" },
+]
+
+/** What the console shows before the receiver has said anything. */
+export const DEFAULT_MISSION: Mission = MISSIONS[0]
+
+/** The mission flying on a channel the box reported, or null if it is not one of ours. */
+export function missionForChannel(channel: string | null | undefined): Mission | null {
+  if (!channel) return null
+  const key = channel.trim().toUpperCase()
+  return MISSIONS.find((m) => m.channel === key) ?? null
+}
+
+/** Look a mission up by name — for turning a <select> value back into a mission. */
+export function missionByName(name: string): Mission | null {
+  return MISSIONS.find((m) => m.name === name) ?? null
+}
 
 /**
  * The name a new flight recording gets if the operator does not type one.
@@ -17,8 +62,11 @@ export const MISSION = "APEX-1"
  * tell them apart until you open each metadata.json. The session folder already
  * carries the date, so only the time is added here.
  */
-export function defaultFlightLabel(now: Date = new Date()): string {
+export function defaultFlightLabel(
+  mission: string = DEFAULT_MISSION.name,
+  now: Date = new Date(),
+): string {
   const hh = String(now.getHours()).padStart(2, "0")
   const mm = String(now.getMinutes()).padStart(2, "0")
-  return `${MISSION}-${hh}${mm}`
+  return `${mission}-${hh}${mm}`
 }

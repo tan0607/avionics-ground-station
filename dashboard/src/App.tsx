@@ -7,7 +7,7 @@
  * The whole data layer (useTelemetry off the mock) is unchanged; the secondary
  * channels come from useSensorSeries, which piggybacks on it without touching it.
  */
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { useTelemetry } from "@/hooks/useTelemetry"
 import { useSensorSeries } from "@/hooks/useSensorSeries"
@@ -15,6 +15,9 @@ import { useTelemetryLog } from "@/hooks/useTelemetryLog"
 import { useFlightRecorder } from "@/hooks/useFlightRecorder"
 import { useSettings } from "@/hooks/useSettings"
 import { useBackendStats } from "@/hooks/useBackendStats"
+import { useGroundStation } from "@/hooks/useGroundStation"
+import { useMission } from "@/hooks/useMission"
+import { AlertStack } from "@/components/AlertStack"
 import { useAlarmSound } from "@/hooks/useAlarmSound"
 import { Card } from "@/components/ui/card"
 import { SideNav, type ViewId } from "@/components/SideNav"
@@ -103,54 +106,36 @@ function ChartCard({
   )
 }
 
-/**
- * SourceAlarm — "the backend cannot read the radio", which is NOT the same as
- * "the radio is quiet" even though both leave the console empty.
- *
- * It sits above every view because the distinction changes what the operator
- * does: a held serial port is fixed on the laptop in seconds, while a silent
- * link sends someone walking to the pad. Without this the two were the same
- * "NO LINK" indicator.
- */
-function SourceAlarm({ error }: { error: string | null | undefined }) {
-  if (!error) return null
-  const busy = /busy|resource/i.test(error)
-  return (
-    <div
-      role="alert"
-      className="flex shrink-0 items-baseline gap-3 border-b border-alarm/40 bg-alarm/10 px-3 py-1.5"
-    >
-      <span className="text-[0.625rem] uppercase tracking-[0.16em] text-alarm">
-        No serial source
-      </span>
-      <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-ink-dim" title={error}>
-        {error}
-      </span>
-      {busy && (
-        <span className="shrink-0 text-[0.625rem] uppercase tracking-[0.12em] text-ink-mute">
-          close the Serial Monitor — reconnects automatically
-        </span>
-      )}
-    </div>
-  )
-}
-
 function App() {
   const [view, setView] = useState<ViewId>("live")
   const telemetry = useTelemetry()
   // Live sources only: in mock mode there is no backend to be broken.
   const stats = useBackendStats(telemetry.source === "mock" ? 60_000 : 2000)
+  const gs = useGroundStation()
+  // Which rocket this console flies. Selecting one retunes the receiver, so
+  // the mission on the header and the channel in the radio are one setting.
+  const mission = useMission(gs)
   const sensors = useSensorSeries(telemetry)
+  // Flight folders are operator-declared, so the recorder lifecycle belongs at
+  // app level with the always-mounted top bar control rather than inside any
+  // individual view.
+  const recorder = useFlightRecorder()
+
+  // What the log needs from the recorder, narrowed here so the accumulator does
+  // not take a dependency on the whole recorder state (and re-run on its poll).
+  const recording = useMemo(
+    () => ({ recording: recorder.recording, flight: recorder.flight?.flight ?? null }),
+    [recorder.recording, recorder.flight?.flight],
+  )
+
   // The log accumulates at APP level, not inside LogView. It used to be called
   // from that component, which App only mounts while the Log tab is open — so
   // the log recorded nothing at all whenever the operator was looking at any
   // other view, and switching tabs threw away what it had. A flight recorder
   // that only records while you watch it is not a flight recorder.
-  const log = useTelemetryLog(telemetry)
-  // Flight folders are operator-declared, so the recorder lifecycle belongs at
-  // app level with the always-mounted top bar control rather than inside any
-  // individual view.
-  const recorder = useFlightRecorder()
+  // It takes the recorder's state so each row is stamped with the flight
+  // folder it landed in — which is why the recorder is declared above it.
+  const log = useTelemetryLog(telemetry, recording)
   const { settings } = useSettings()
   // Buzzer lives at app level so alarms sound on every view, not just Settings.
   const alarm = useAlarmSound(telemetry, settings)
@@ -163,11 +148,23 @@ function App() {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <h1 className="sr-only">Rocket ground station — live telemetry</h1>
+
+      {/* Bottom-right, over everything: what is wrong and what to do about it.
+          Derived from live state, so a card clears when its cause does. */}
+      <AlertStack
+        backendStatus={stats.status}
+        sourceError={stats.data?.source_error}
+        sourceKind={stats.data?.source?.port}
+        framesDecoded={stats.data?.frames_decoded}
+        crcErrors={stats.data?.crc_errors}
+        unknownStates={stats.data?.unknown_states}
+        socketStatus={telemetry.status}
+        channelError={gs.lastError}
+      />
       <SideNav active={view} onSelect={setView} />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar state={telemetry} backend={stats.data?.source} recorder={recorder} />
-        {telemetry.source !== "mock" && <SourceAlarm error={stats.data?.source_error} />}
+        <TopBar state={telemetry} backend={stats.data?.source} recorder={recorder} mission={mission} />
 
         {view === "live" && (
           <>
@@ -253,11 +250,13 @@ function App() {
           </main>
         )}
 
-        {view === "log" && <LogView log={log} />}
+        {view === "log" && <LogView log={log} recording={recording} />}
 
         {view === "flights" && <FlightsView />}
 
-        {view === "settings" && <SettingsView telemetry={telemetry} alarm={alarm} />}
+        {view === "settings" && (
+          <SettingsView telemetry={telemetry} alarm={alarm} gs={gs} mission={mission} />
+        )}
       </div>
     </div>
   )

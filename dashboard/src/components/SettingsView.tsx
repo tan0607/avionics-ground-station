@@ -7,16 +7,18 @@
  *   2. Alarms & audio — buzzer master + per-alarm arming + a test beep.
  *   3. Display — high-contrast, table density, row cap.
  *   4. Radio channel — which rocket the receiver box is tuned to, and the
- *      A/B switch. Only live on a --serial source; the shown channel comes
- *      from the box itself, never from what we asked for.
+ *      mission switch (the header's picker, spelled out). Only live on a
+ *      --serial source; the shown channel comes from the box itself, never
+ *      from what we asked for.
  *   5. Data export — download the active session's files from the backend.
  */
 import { type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { apiUrl } from "@/lib/api"
-import { useBackendStats, type BackendSource, type StatsState } from "@/hooks/useBackendStats"
-import { useGroundStation } from "@/hooks/useGroundStation"
-import { fmtPercent } from "@/lib/format"
+import { useBackendStats, type BackendLink, type BackendSource, type StatsState } from "@/hooks/useBackendStats"
+import type { GroundStation } from "@/hooks/useGroundStation"
+import type { MissionState } from "@/hooks/useMission"
+import { fmtFixed, fmtPercent } from "@/lib/format"
 import { NO_DEPLOY_FLAGS, type TelemetryState } from "@/hooks/useTelemetry"
 import { isFlagKnown } from "@/lib/protocol"
 import type { AlarmSound } from "@/hooks/useAlarmSound"
@@ -126,6 +128,21 @@ function sourceLabel(src: BackendSource | undefined, isMock: boolean, reachable:
   return src.kind.toUpperCase()
 }
 
+/**
+ * RSSI + SNR for the last decoded frame, or "—" on a link that reports neither.
+ *
+ * The absence is the point. loss.py still describes seq gaps as the only link
+ * signal it has, and on the binary frame that is true — but the SX1278 reports
+ * these per packet, and a link losing nothing at -110 dBm is one bad gust from
+ * losing everything. Loss alone cannot say that; it only says what has already
+ * been missed.
+ */
+function signalLabel(link: BackendLink | null | undefined): string {
+  if (!link || link.rssi_dbm == null) return "—"
+  const snr = link.snr_db == null ? "" : ` · SNR ${fmtFixed(link.snr_db, 1)} dB`
+  return `${link.rssi_dbm} dBm${snr}`
+}
+
 function ConnectionCard({ telemetry, stats }: { telemetry: TelemetryState; stats: StatsState }) {
   const reachable = stats.status === "ok"
   const s = stats.data
@@ -160,6 +177,14 @@ function ConnectionCard({ telemetry, stats }: { telemetry: TelemetryState; stats
 
       <div className="py-1">
         <Stat label="Socket" value={String(telemetry.status).toUpperCase()} />
+        {/*
+          Every browser attached to /ws, THIS ONE INCLUDED — so a lone console
+          on a live link reads 1, and 2 means someone else is watching. The
+          backend fans one radio out to as many consoles as connect, which is
+          how a second laptop joins; without this the operator running the
+          radio had no way to tell whether their team was actually seeing it.
+        */}
+        <Stat label="Consoles" value={s ? String(s.clients) : "—"} />
         <Stat
           label="Backend"
           value={reachable ? "REACHABLE" : stats.status === "loading" ? "…" : "UNREACHABLE"}
@@ -182,6 +207,7 @@ function ConnectionCard({ telemetry, stats }: { telemetry: TelemetryState; stats
         <Stat label="Session" value={s?.session ?? (isMock ? "— (mock)" : "—")} ink="text-ink-dim" />
         <Stat label="Frames decoded" value={s ? s.frames_decoded.toLocaleString() : "—"} />
         <Stat label="CRC errors" value={s ? String(s.crc_errors) : "—"} ink={s && s.crc_errors > 0 ? "text-caution" : "text-ink"} />
+        <Stat label="Signal" value={reachable ? signalLabel(s?.link) : "—"} />
         <Stat label="Loss" value={s ? fmtPercent(s.loss_pct / 100, 2) : "—"} />
       </div>
     </SettingCard>
@@ -263,6 +289,12 @@ function ExportCard({ telemetry, stats }: { telemetry: TelemetryState; stats: St
   const files: Array<{ label: string; path: string }> = [
     { label: "telemetry.csv", path: "/session/telemetry.csv" },
     { label: "events.csv", path: "/session/events.csv" },
+    // The ground station's own log: flight states, pyro, and the LINK STALE /
+    // LOST lines that link_watchdog emits from the ABSENCE of frames. Nothing
+    // in telemetry.csv can carry those — a frame-driven file cannot record the
+    // frames that never came — so leaving it off this card meant the one file
+    // that explains a gap was the one file you could not download.
+    { label: "mission.log", path: "/session/mission.log" },
     { label: "raw.log", path: "/session/raw.log" },
     { label: "stats.json", path: "/stats" },
   ]
@@ -297,9 +329,8 @@ function ExportCard({ telemetry, stats }: { telemetry: TelemetryState; stats: St
   )
 }
 
-function RadioChannelCard() {
-  const gs = useGroundStation()
-
+function RadioChannelCard({ gs, mission }: { gs: GroundStation; mission: MissionState }) {
+  const heard = mission.confirmed
   return (
     <SettingCard title="Radio Channel">
       <Row
@@ -312,33 +343,53 @@ function RadioChannelCard() {
             gs.channel ? "text-ink" : "text-ink-mute",
           )}
         >
-          {gs.channel ? `Rocket ${gs.channel}` : "—"}
+          {heard
+            ? `${heard.name} · channel ${heard.channel}`
+            : gs.channel
+              ? `channel ${gs.channel} · no mission`
+              : "—"}
         </span>
       </Row>
 
-      <Row label="Switch to" hint="one rocket, one channel">
+      <Row label="Switch to" hint="one rocket, one channel — same picker as the header">
         <div className="inline-flex overflow-hidden rounded-sm border border-hairline">
-          {gs.channels.map((c) => {
-            const active = gs.channel === c
+          {mission.missions.map((m) => {
+            // Active means the BOX says so. The operator's pick without a
+            // confirmation behind it is drawn as caution, not as done.
+            const active = heard?.name === m.name
+            const asked = !active && mission.mission.name === m.name && mission.pending
             return (
               <button
-                key={c}
+                key={m.name}
                 type="button"
                 disabled={!gs.supported || gs.busy}
                 aria-current={active ? "true" : undefined}
-                onClick={() => void gs.setChannel(c)}
+                title={`Retune the receiver to channel ${m.channel}`}
+                onClick={() => mission.select(m.name)}
                 className={cn(
                   "px-2.5 py-1 text-[0.6875rem] uppercase tracking-wide transition-colors",
                   "disabled:cursor-not-allowed disabled:opacity-40",
-                  active ? "bg-surface-2 text-ink" : "text-ink-mute hover:text-ink-dim",
+                  active
+                    ? "bg-surface-2 text-ink"
+                    : asked
+                      ? "text-caution"
+                      : "text-ink-mute hover:text-ink-dim",
                 )}
               >
-                {c}
+                {m.name}
+                <span className="ml-1 text-ink-mute">{m.channel}</span>
               </button>
             )
           })}
         </div>
       </Row>
+
+      {mission.pending && (
+        <p className="px-2 pb-2 text-[0.6875rem] leading-snug text-caution">
+          Asked for {mission.mission.name}; the receiver still reports {heard?.name}.
+          Frames arriving now are {heard?.name}'s.
+        </p>
+      )}
 
       {/* Why the control is dead, when it is. Without this the buttons are just
           greyed out and the operator is left guessing whether the box is
@@ -352,7 +403,7 @@ function RadioChannelCard() {
       {gs.supported && !gs.channel && !gs.lastError && (
         <p className="px-2 pb-2 text-[0.6875rem] leading-snug text-ink-mute">
           The receiver announces its channel at boot, on a switch, and when asked.
-          Nothing heard yet — press A or B, or check the port.
+          Nothing heard yet — pick a mission, or check the port.
         </p>
       )}
     </SettingCard>
@@ -360,13 +411,23 @@ function RadioChannelCard() {
 }
 
 
-export function SettingsView({ telemetry, alarm }: { telemetry: TelemetryState; alarm: AlarmSound }) {
+export function SettingsView({
+  telemetry,
+  alarm,
+  gs,
+  mission,
+}: {
+  telemetry: TelemetryState
+  alarm: AlarmSound
+  gs: GroundStation
+  mission: MissionState
+}) {
   const stats = useBackendStats() // one poll, shared by the connection + export cards
   return (
     <main className="min-h-0 flex-1 overflow-auto p-2">
       <div className="mx-auto grid max-w-5xl grid-cols-1 gap-2 md:grid-cols-2">
         <ConnectionCard telemetry={telemetry} stats={stats} />
-        <RadioChannelCard />
+        <RadioChannelCard gs={gs} mission={mission} />
         <AlarmsCard telemetry={telemetry} alarm={alarm} />
         <DisplayCard />
         <ExportCard telemetry={telemetry} stats={stats} />

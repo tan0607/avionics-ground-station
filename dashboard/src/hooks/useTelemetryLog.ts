@@ -26,7 +26,7 @@
  * The backend's telemetry.csv remains the authoritative flight record; this is
  * the operator's working copy, and it does not need the backend to be up.
  */
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   FLIGHT_STATE_NAME,
   type FlightState,
@@ -71,6 +71,16 @@ export interface LogRow {
    * reading telemetry back was the only one missing most of it.
    */
   extra: Record<string, number>
+  /**
+   * The flight folder this frame was recorded into, or null if REC was off.
+   *
+   * The Log view had no relation to the archive at all: you could scroll a
+   * thousand rows without a hint of which of them are in a flight folder and
+   * which only ever existed in the browser. Carried per row rather than derived
+   * later, because the answer changes mid-table and the recorder's own history
+   * is not queryable from here.
+   */
+  flight: string | null
 }
 
 export type EventSeverity = "info" | "nominal" | "caution" | "alarm"
@@ -79,7 +89,7 @@ export interface LogEvent {
   id: number
   onboardMs: number
   tPlusSec: number | null
-  kind: "session" | "state" | "pyro" | "link" | "no-deploy"
+  kind: "session" | "state" | "pyro" | "link" | "no-deploy" | "record"
   severity: EventSeverity
   message: string
   /** Small trailing context (altitude, state name…). */
@@ -90,6 +100,18 @@ export interface TelemetryLog {
   rows: LogRow[] // newest-first
   events: LogEvent[] // newest-first
   rev: number
+  /**
+   * Empty the operator's working copy — rows, events and the persisted mirror.
+   *
+   * Deliberately MANUAL. Clearing automatically on a new session was the
+   * obvious version and it is the same trap the recorder already learned:
+   * the backend pulses the receiver's reset line on every connect, so "new
+   * session" fires whenever the server restarts, and an auto-clear would wipe
+   * the table mid-flight for no reason the operator caused. The authoritative
+   * record is telemetry.csv on the backend either way; this list is what the
+   * operator is looking at, so the operator says when it goes.
+   */
+  clear: () => void
 }
 
 // Internal caps. rows is generous (LogView slices to the user's rowCap);
@@ -159,7 +181,19 @@ const LINK_EVENT: Record<LinkState, { severity: EventSeverity; message: string }
   down: { severity: "alarm", message: "LINK LOST" },
 }
 
-export function useTelemetryLog(t: TelemetryState): TelemetryLog {
+/** What the recorder is doing, as much of it as the log needs. */
+export interface LogRecording {
+  recording: boolean
+  /** Flight folder name while recording, e.g. "flight-02_apex-1-1224". */
+  flight: string | null
+}
+
+const NOT_RECORDING: LogRecording = { recording: false, flight: null }
+
+export function useTelemetryLog(
+  t: TelemetryState,
+  rec: LogRecording = NOT_RECORDING,
+): TelemetryLog {
   // Seeded from localStorage so reopening the console shows the log where it
   // was left, not an empty table. useRef's initialiser runs on every render, so
   // the read is done once via a lazy useState instead.
@@ -168,11 +202,19 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     rows: restored?.rows ?? [],
     events: restored?.events ?? [],
     rev: 0,
+    // Replaced below with the real implementation; the ref's initialiser
+    // cannot see the callbacks that have not been declared yet.
+    clear: () => {},
   })
 
   // Latest snapshot, readable inside effects without widening their deps.
   const tRef = useRef(t)
   tRef.current = t
+
+  // Same trick for the recorder: it polls on its own 2 s clock, and the frame
+  // effect must not re-run just because that poll returned.
+  const recRef = useRef(rec)
+  recRef.current = rec
 
   // Diff bookkeeping.
   const lastChartRev = useRef(-1)
@@ -195,6 +237,34 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     events.unshift({ id: nextId.current++, ...e })
     if (events.length > MAX_EVENTS) events.length = MAX_EVENTS
   }
+
+  const clear = useCallback(() => {
+    ref.current.rows = []
+    ref.current.events = []
+    // A cleared log that is simply empty looks like a log that never recorded.
+    // One surviving line says which it was, and when.
+    pushEvent({
+      onboardMs: tRef.current.frame?.onboardMs ?? 0,
+      tPlusSec: tRef.current.tPlusSec,
+      kind: "session",
+      severity: "info",
+      message: "LOG CLEARED",
+      detail: "by operator",
+    })
+    // Drop the persisted mirror too, or the next reload restores exactly what
+    // was just cleared. The 2 s flush re-writes the emptied log straight after.
+    try {
+      window.localStorage.removeItem(STORAGE_KEY)
+    } catch {
+      // Storage disabled or over quota — the in-memory clear already happened.
+    }
+    // nextRowId/nextId are refs and keep climbing, so the ids handed to React
+    // after a clear can never collide with the ones it just unmounted.
+    ref.current.rev += 1
+    forceRender((n) => n + 1)
+    // pushEvent closes over refs only, so this callback never needs rebuilding.
+  }, [])
+  ref.current.clear = clear
 
   // --- frame stream: rows + frame-derived events -----------------------------
   useEffect(() => {
@@ -252,6 +322,7 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
       rssiDbm: frame.rssiDbm,
       snrDb: frame.snrDb,
       extra: frame.extra,
+      flight: recRef.current.recording ? recRef.current.flight : null,
     }
     const rows = rowsNow
     rows.unshift(row)
@@ -310,6 +381,38 @@ export function useTelemetryLog(t: TelemetryState): TelemetryLog {
     ref.current.rev += 1
     forceRender((n) => n + 1)
   }, [t.chart.rev])
+
+  // --- recording boundaries --------------------------------------------------
+  // The one boundary in this log an operator draws deliberately. SESSION RESET
+  // below marks where the VEHICLE restarted; this marks where the archive
+  // folder opened and closed, which is the line that decides what ends up on
+  // disk under a name.
+  const prevRecording = useRef<boolean | null>(null)
+  useEffect(() => {
+    // Seed without emitting: arriving on a console that is already recording is
+    // not a start, and the backend poll resolves after the first render.
+    if (prevRecording.current === null) {
+      prevRecording.current = rec.recording
+      return
+    }
+    if (prevRecording.current === rec.recording) return
+    prevRecording.current = rec.recording
+
+    const snap = tRef.current
+    pushEvent({
+      onboardMs: snap.frame?.onboardMs ?? 0,
+      tPlusSec: snap.tPlusSec,
+      kind: "record",
+      severity: "info",
+      message: rec.recording ? "RECORDING STARTED" : "RECORDING STOPPED",
+      // Through the ref, not the prop: the flag and the folder name arrive in
+      // the same poll, and depending on the name would log a second start for
+      // the same recording.
+      detail: recRef.current.flight ?? undefined,
+    })
+    ref.current.rev += 1
+    forceRender((n) => n + 1)
+  }, [rec.recording])
 
   // --- link transitions ------------------------------------------------------
   useEffect(() => {

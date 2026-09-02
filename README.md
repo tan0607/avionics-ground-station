@@ -12,6 +12,8 @@ launch site has no network.
                                                └─ flight-NN_<name>/  (operator-declared)
 ```
 
+- **`start.command`** — the launcher: one double-click (or `./start.command`)
+  brings up deps, dashboard build, serial link, backend and console together.
 - **`firmware/`** — the two Arduino sketches that fly: `MRCC_FlightComputer`
   (ESP32-S3 — sensors, filters, flight state, pyro, SD log, downlink) and
   `MRCC_GroundStation` (ESP32 — receives and prints to USB). Plus `SD_Doctor`
@@ -34,10 +36,17 @@ launch site has no network.
 ### Two rockets fly
 
 Each airframe gets its own radio channel — `VEHICLE_A` is 433.3 MHz, `VEHICLE_B`
-is 434.1 MHz — and **a rocket and its ground station must be flashed from the
-same setting.** LoRa does not pair: on a shared channel each ground station
-decodes the *other* rocket's frames while the two transmitters collide on air.
-`firmware/README.md` has the flashing table and the arithmetic.
+is 434.1 MHz — and **the rocket is flashed for its channel; the ground station
+is retuned to match.** LoRa does not pair: on a shared channel each ground
+station decodes the *other* rocket's frames while the two transmitters collide
+on air. `firmware/README.md` has the flashing table and the arithmetic.
+
+The console calls them by mission name — **A1R** flies on channel A, **A2R** on
+channel B. The Mission picker in the top bar is the channel switch: choosing a
+vehicle sends the box the same A/B key the serial monitor takes, so the name on
+the header and the channel in the radio are one setting. The picker shows what
+you asked for; beside it, the box's own answer, which is the only thing that
+proves the receiver moved.
 
 ### Two wire formats
 
@@ -59,7 +68,48 @@ See `HANDOFF.md` (architecture + decisions — note its staleness banner),
 | Node.js + npm | 20+ | `brew install node` |
 | Python | 3.12+ | (system / pyenv) |
 
-One-time setup:
+---
+
+## Start it — one command
+
+**Double-click `start.command` in Finder**, or from the repo root:
+
+```bash
+./start.command
+```
+
+That is the whole launch-day procedure. It creates the venv and installs the
+backend deps if they're missing, rebuilds `dashboard/dist` only when a source
+file is newer than the build, finds the ground station on USB, starts the
+backend against it, and opens the console once the server actually answers.
+Ctrl-C stops everything.
+
+| | |
+|---|---|
+| `./start.command` | live: find the receiver on USB, serve, open the console |
+| `./start.command --demo` | no hardware: the flight simulator, looping |
+| `./start.command --replay flights/<session>` | no hardware: replay a real recording |
+| `./start.command --dev` | Vite hot reload (`:5180`) in front of a live backend |
+| `./start.command --serial /dev/cu.usbserial-0001` | skip autodetect |
+
+Also `--no-browser`, `--wait SECONDS` (how long to wait for the receiver before
+asking what to do), and anything `backend.app` takes — `--loop`, `--fast`,
+`--loss`, `--no-reset`, `--port`.
+
+Two things it deliberately won't do. It **never falls back to the simulator on
+its own**: with no receiver on USB it waits, then asks — a screen full of
+moving numbers that came from nowhere is this console's worst failure. And a
+second run while one is already serving **opens that one** instead of dying on
+"address already in use".
+
+If two boards are plugged in (receiver + flight computer), it lists them and
+asks which is which, because reading the wrong port is a blank screen with no
+error on it.
+
+The rest of this README is the same pipeline driven by hand — useful when
+you're debugging a piece of it, and what `start.command` is doing underneath.
+
+One-time setup, if you'd rather do it yourself:
 
 ```bash
 # backend deps (from repo root)
@@ -172,8 +222,8 @@ null-vs-zero handling for the peripherals MRCC cannot see (SD/PYRO/VBAT read
 
 ## Live version (real hardware)
 
-Wire up the ground station (see `firmware/README.md`), then point the backend at
-the serial port instead of the simulator:
+Wire up the ground station (see `firmware/README.md`) and run
+**`./start.command`** — it does everything below for you. By hand it is:
 
 ```bash
 cd dashboard && npm run build && cd ..          # once, or after UI changes

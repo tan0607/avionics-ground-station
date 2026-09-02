@@ -411,8 +411,11 @@ def delete_recorded_flight(flights_root: Path, session_id: str,
         else:
             extras.append(entry.name)
     if extras:
+        # directory.name, not flight_name: a session arrives here as the "-"
+        # sentinel, and "- also holds ..." names nothing the operator can find.
         raise FlightFolderNotEmpty(
-            f"{flight_name} also holds {', '.join(extras[:5])} — delete those by hand first"
+            f"{directory.name} also holds {', '.join(extras[:5])} — "
+            "delete those by hand first"
         )
 
     for name in removed:
@@ -475,48 +478,92 @@ def describe_provenance(source: object) -> dict:
 
 
 # ----------------------------------------------------------------------------
-# Session rows -- counted from the files, because metadata cannot say
+# Session rows -- measured from the files, because metadata cannot say
 # ----------------------------------------------------------------------------
 # A session's metadata.json is written when the session OPENS. It never records
 # how much landed in it, and nothing closes it on a process that was killed, so
-# row counts have to come from the CSVs themselves. Counting is cheap once and
-# wasteful every five seconds, so it is memoised on (size, mtime): a closed
-# session is read exactly once no matter how often the archive is polled, and
-# the one file still growing re-reads only itself.
-_LINE_COUNT_CACHE: dict[str, tuple[int, float, int]] = {}
+# both the row count and the span have to come from the CSV itself.
+#
+# NOT from file mtimes, which was the obvious shortcut and is wrong here:
+# 2026-08-19T05-54-40Z has a raw.log touched four days after its telemetry
+# ended, which made that session read as a 5-day recording. The same folder
+# shows why the folder name is not the answer either -- it was created at
+# 05:54Z on the 19th and its first frame arrives at 03:04Z on the 20th, a
+# backend left running overnight before the radio came up. What an operator
+# wants from the list is the window when data actually flowed, so that is what
+# is measured: first host_time to last host_time.
+#
+# Counting is cheap once and wasteful every five seconds, so the probe is
+# memoised on (size, mtime) -- a closed session is read exactly once no matter
+# how often the archive is polled, and the file still growing re-reads alone.
+_CSV_PROBE_CACHE: dict[str, tuple[int, float, dict]] = {}
+_EMPTY_PROBE = {"rows": 0, "first": None, "last": None}
+# Enough to hold the header plus a first row, and to hold a final row from the
+# tail, without keeping a 40 MB file in memory to find two lines of it.
+_EDGE_BYTES = 8192
 
 
-def _csv_data_rows(path: Path) -> int:
-    """Data rows in a CSV -- newlines minus the header line."""
+def _host_time(line: bytes, column: int) -> str | None:
+    if column < 0:
+        return None
+    fields = line.decode("utf-8", "replace").rstrip("\r\n").split(",")
+    if column >= len(fields):
+        return None
+    return fields[column] or None
+
+
+def _csv_probe(path: Path) -> dict:
+    """{rows, first, last} for one CSV: data rows, and the host_time span."""
     try:
         stat = path.stat()
     except OSError:
-        return 0
+        return dict(_EMPTY_PROBE)
     key = str(path)
-    cached = _LINE_COUNT_CACHE.get(key)
+    cached = _CSV_PROBE_CACHE.get(key)
     if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime:
-        return cached[2]
-    lines = 0
+        return dict(cached[2])
+
+    newlines, head, tail = 0, b"", b""
     try:
         with path.open("rb") as fh:
             while chunk := fh.read(1 << 20):
-                lines += chunk.count(b"\n")
+                if not head:
+                    head = chunk[:_EDGE_BYTES]
+                newlines += chunk.count(b"\n")
+                # The final complete line lives somewhere in the last window;
+                # carrying one window forward beats seeking backwards for it.
+                tail = (tail + chunk)[-_EDGE_BYTES:]
     except OSError:
-        return 0
-    rows = max(0, lines - 1)
-    _LINE_COUNT_CACHE[key] = (stat.st_size, stat.st_mtime, rows)
-    return rows
+        return dict(_EMPTY_PROBE)
+
+    head_lines = head.split(b"\n")
+    header = head_lines[0] if head_lines else b""
+    try:
+        column = header.decode("utf-8", "replace").rstrip("\r\n").split(",").index("host_time")
+    except ValueError:
+        column = -1
+
+    first = _host_time(head_lines[1], column) if len(head_lines) > 1 else None
+    last = None
+    for line in reversed(tail.split(b"\n")):
+        if line.strip() and line != header:
+            last = _host_time(line, column)
+            break
+    # One data row means first and last are the same row, not a missing one.
+    probe = {"rows": max(0, newlines - 1), "first": first, "last": last or first}
+    _CSV_PROBE_CACHE[key] = (stat.st_size, stat.st_mtime, dict(probe))
+    return probe
 
 
-def _newest_mtime(directory: Path) -> float | None:
-    newest = None
-    for name in RECORDED_FLIGHT_FILES:
-        try:
-            mtime = (directory / name).stat().st_mtime
-        except OSError:
-            continue
-        newest = mtime if newest is None else max(newest, mtime)
-    return newest
+def _span_seconds(first: str | None, last: str | None) -> float | None:
+    if not first or not last:
+        return None
+    try:
+        began = datetime.fromisoformat(first)
+        ended = datetime.fromisoformat(last)
+    except ValueError:
+        return None
+    return max(0.0, (ended - began).total_seconds())
 
 
 def _recorded_session_summary(directory: Path, flight_count: int) -> dict | None:
@@ -539,15 +586,11 @@ def _recorded_session_summary(directory: Path, flight_count: int) -> dict | None
     if not isinstance(raw, dict):
         return None
 
-    started = raw.get("created_utc") if isinstance(raw.get("created_utc"), str) else None
-    duration_s = None
-    newest = _newest_mtime(directory)
-    if started and newest is not None:
-        try:
-            began = datetime.fromisoformat(started).timestamp()
-            duration_s = max(0.0, newest - began)
-        except ValueError:
-            duration_s = None
+    opened = raw.get("created_utc") if isinstance(raw.get("created_utc"), str) else None
+    probe = _csv_probe(directory / "telemetry.csv")
+    # First frame, not folder creation -- a backend left running before the
+    # radio came up would otherwise date the recording hours or a day early.
+    started = probe["first"] or opened
 
     try:
         raw_bytes = (directory / "raw.log").stat().st_size
@@ -562,15 +605,18 @@ def _recorded_session_summary(directory: Path, flight_count: int) -> dict | None
         "path": str(directory),
         "label": "",
         "started_utc": started,
-        "stopped_utc": None,
-        "duration_s": duration_s,
+        "stopped_utc": probe["last"],
+        "duration_s": _span_seconds(probe["first"], probe["last"]),
+        # A session has no stop record: the process that would have written one
+        # is the process that exited.
         "stop_reason": None,
+        "opened_utc": opened,
         # Disk cannot tell which session a live backend still holds open; the
         # /flights route marks that one, because it is the only caller that
         # knows.
         "recording": False,
-        "rows": _csv_data_rows(directory / "telemetry.csv"),
-        "events": _csv_data_rows(directory / "events.csv"),
+        "rows": probe["rows"],
+        "events": _csv_probe(directory / "events.csv")["rows"],
         "raw_bytes": raw_bytes,
         "source": raw.get("source") if isinstance(raw.get("source"), dict) else {},
         "packet": raw.get("packet") if isinstance(raw.get("packet"), dict) else {},

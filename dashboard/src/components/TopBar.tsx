@@ -1,5 +1,5 @@
 /**
- * TopBar — the console header strip: mission id · T+ mission clock · link pill ·
+ * TopBar — the console header strip: mission picker · T+ mission clock · link pill ·
  * measured rate · packet loss · source tag. Calm-until-alarm: normally near-black surface, but
  * the WHOLE bar flips to the alarm wash when the link goes stale or a no-deploy
  * is detected, so a lost vehicle is impossible to miss (PRODUCT.md §6).
@@ -17,7 +17,72 @@ import {
   recordingElapsedSec,
   type RecorderState,
 } from "@/hooks/useFlightRecorder";
-import { MISSION, defaultFlightLabel } from "@/lib/mission";
+import { defaultFlightLabel } from "@/lib/mission";
+import type { MissionState } from "@/hooks/useMission";
+
+/**
+ * MissionSelect — the vehicle picker, which is also the channel switch.
+ *
+ * Changing it sends the receiver the channel that rocket flies on, so the
+ * header cannot name one vehicle while the radio listens to the other. What it
+ * CANNOT do is prove the box obeyed, and a receiver on the wrong channel is
+ * silent rather than broken — so the marker beside it carries the box's own
+ * word: caution while the announced channel still belongs to the other rocket,
+ * dim while the box has not said anything at all. Both clear themselves the
+ * moment the receiver announces the channel that was asked for.
+ */
+function MissionSelect({ mission }: { mission: MissionState }) {
+  const { confirmed, pending, supported, busy } = mission;
+  const note = pending
+    ? `box on ${confirmed?.name}`
+    : supported && !confirmed
+      ? "channel unheard"
+      : null;
+
+  return (
+    <span className="flex items-baseline gap-2">
+      <select
+        value={mission.mission.name}
+        onChange={(e) => mission.select(e.target.value)}
+        disabled={busy}
+        aria-label="Mission — selects the vehicle and retunes the receiver"
+        title={
+          supported
+            ? "Mission — switching retunes the receiver to that rocket's channel"
+            : "Mission — names the flight folder; no radio in this session to retune"
+        }
+        className={cn(
+          "-mx-1 cursor-pointer rounded-sm border border-transparent bg-transparent px-1 py-0.5",
+          "text-sm font-medium tracking-wide text-ink",
+          "hover:border-hairline focus:border-ink-mute focus:outline-none",
+          "disabled:cursor-not-allowed disabled:opacity-40",
+        )}
+      >
+        {mission.missions.map((m) => (
+          <option key={m.name} value={m.name} className="bg-surface text-ink">
+            {m.name} · {m.channel}
+          </option>
+        ))}
+      </select>
+      {note && (
+        <span
+          title={
+            pending
+              ? `The receiver still says it is on channel ${confirmed?.channel} (${confirmed?.name}). Frames arriving now are that rocket's.`
+              : "The receiver has not announced a channel yet — nothing confirms what it is listening to."
+          }
+          className={cn(
+            "text-[0.625rem] uppercase tracking-[0.16em]",
+            pending ? "text-caution" : "text-ink-mute",
+          )}
+        >
+          <span aria-hidden>{pending ? "⚠ " : "◆ "}</span>
+          {note}
+        </span>
+      )}
+    </span>
+  );
+}
 
 function LinkPill({ link, ageMs }: { link: LinkState; ageMs: number }) {
   const dot =
@@ -194,10 +259,12 @@ function FlightNameField({
   value,
   onChange,
   disabled,
+  mission,
 }: {
   value: string;
   onChange: (v: string) => void;
   disabled: boolean;
+  mission: string;
 }) {
   return (
     <input
@@ -208,7 +275,7 @@ function FlightNameField({
       spellCheck={false}
       maxLength={80}
       aria-label="Name for the next flight recording"
-      placeholder={MISSION}
+      placeholder={mission}
       title="Name for the next flight recording — folder is flight-NN_<name>"
       className={cn(
         "w-36 rounded-sm border border-hairline bg-transparent px-2 py-1",
@@ -220,11 +287,21 @@ function FlightNameField({
   );
 }
 
-function RecordButton({ recorder }: { recorder: RecorderState }) {
+function RecordButton({
+  recorder,
+  mission,
+}: {
+  recorder: RecorderState;
+  mission: string;
+}) {
   const [armed, setArmed] = useState(false);
   // Lazy initialiser: defaultFlightLabel() reads the clock, and running it on
   // every render would rewrite the operator's typed name.
-  const [name, setName] = useState(defaultFlightLabel);
+  const [name, setName] = useState(() => defaultFlightLabel(mission));
+  // Whether the field holds the operator's own words. The suggested name is
+  // re-stamped when the mission changes, and overwriting something they typed
+  // to say that would be worse than a stale suggestion.
+  const typed = useRef(false);
   // Ticks the elapsed readout locally. The top bar re-renders at 10 Hz off the
   // telemetry publish, but that stops when frames stop — and a recording timer
   // that freezes because the LINK went quiet says the wrong thing entirely.
@@ -255,14 +332,23 @@ function RecordButton({ recorder }: { recorder: RecorderState }) {
   // with the time it actually starts rather than the time the console booted.
   const wasRecording = useRef(false);
   useEffect(() => {
-    if (wasRecording.current && !recording) setName(defaultFlightLabel());
+    if (wasRecording.current && !recording) {
+      typed.current = false;
+      setName(defaultFlightLabel(mission));
+    }
     wasRecording.current = recording;
-  }, [recording]);
+  }, [recording, mission]);
+
+  // Switching vehicles re-stamps the suggestion: pressing REC after picking A2R
+  // must not file the folder under A1R.
+  useEffect(() => {
+    if (!typed.current) setName(defaultFlightLabel(mission));
+  }, [mission]);
 
   const onClick = () => {
     if (busy || offline) return;
     if (!recording) {
-      recorder.start(name.trim() || defaultFlightLabel());
+      recorder.start(name.trim() || defaultFlightLabel(mission));
     } else if (armed) {
       setArmed(false);
       recorder.stop();
@@ -289,7 +375,11 @@ function RecordButton({ recorder }: { recorder: RecorderState }) {
       {!recording && (
         <FlightNameField
           value={name}
-          onChange={setName}
+          mission={mission}
+          onChange={(v) => {
+            typed.current = true;
+            setName(v);
+          }}
           disabled={offline || busy}
         />
       )}
@@ -353,10 +443,12 @@ export function TopBar({
   state,
   backend,
   recorder,
+  mission,
 }: {
   state: TelemetryState;
   backend?: BackendSource;
   recorder: RecorderState;
+  mission: MissionState;
 }) {
   const {
     link,
@@ -388,9 +480,7 @@ export function TopBar({
         <span className="text-[0.625rem] uppercase tracking-[0.16em] text-ink-mute">
           Mission
         </span>
-        <span className="text-sm font-medium tracking-wide text-ink">
-          {MISSION}
-        </span>
+        <MissionSelect mission={mission} />
       </div>
 
       <div className="flex items-center px-4">
@@ -414,7 +504,7 @@ export function TopBar({
       </Segment>
 
       <div className="ml-auto flex items-center px-4">
-        <RecordButton recorder={recorder} />
+        <RecordButton recorder={recorder} mission={mission.mission.name} />
       </div>
 
       <div className="flex items-center px-4">
