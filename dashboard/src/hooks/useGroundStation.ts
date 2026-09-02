@@ -96,3 +96,6 @@ export function useGroundStation() {
 
   return { ...state, busy, lastError, setChannel, refresh }
 }
+
+/** What the hook hands back — the shape components take as a prop. */
+export type GroundStation = ReturnType<typeof useGroundStation>

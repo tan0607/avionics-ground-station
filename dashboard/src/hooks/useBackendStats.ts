@@ -32,11 +32,25 @@ export interface BackendSource {
   loop?: boolean
 }
 
+/**
+ * Per-packet radio metrics off the last decoded frame (mrcc.py LinkQuality).
+ * Null on the binary format, whose 32-byte frame has no room for them: seq-gap
+ * loss really is the only link signal there, so the UI must show nothing rather
+ * than a zero that reads as a dead-flat carrier.
+ */
+export interface BackendLink {
+  rssi_dbm: number | null
+  snr_db: number | null
+  payload_len: number | null
+}
+
 export interface BackendStats {
   session: string | null
   format?: string
   /** Absent only if the backend predates this field. */
   source?: BackendSource
+  /** Null when the wire format carries no radio metrics. */
+  link?: BackendLink | null
   frames_decoded: number
   /** Frames that arrived and failed their integrity check (CRC, or MRCC's length field). */
   crc_errors: number
