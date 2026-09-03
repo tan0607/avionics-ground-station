@@ -1,0 +1,26 @@
+{
+    // The interpreter for the whole repo. There is exactly one venv and it is not
+    // at the workspace root -- it lives at backend/.venv (backend/README.md) -- so
+    // VS Code does not find it by autodiscovery and falls back to the system
+    // Python 3.14, which has no pyserial. That is what puts red squiggles under
+    // `import serial` in backend/sources.py while the app itself runs fine.
+    //
+    // The venv carries the union of both dependency sets: fastapi + uvicorn +
+    // pyserial for the backend, and pandas + matplotlib + jupyter for
+    // notebooks/flight_report.ipynb and firmware/tools/plot_filters.py. Keep it
+    // that way -- a second venv would put one half or the other back in the red.
+    //
+    // NOTE: this is only consulted when the workspace has no interpreter chosen
+    // yet. If one was already picked, run "Python: Select Interpreter" once and
+    // point it at backend/.venv/bin/python.
+    "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python",
+
+    // notebooks/flight_report.ipynb walks up to the repo root and inserts it into
+    // sys.path at runtime, so it can import the same shared/protocol/packet.py the
+    // backend uses instead of a copy. Pylance does not execute that, so without
+    // this it reports `from shared.protocol import packet` as unresolved -- the
+    // notebook's cwd is notebooks/, not the root.
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}"
+    ]
+}
