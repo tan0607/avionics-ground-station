@@ -3,10 +3,18 @@
     // built with arduino-cli, so the include paths point at the esp32 core the
     // Arduino IDE / arduino-cli already downloaded into ~/Library/Arduino15.
     //
-    // Two configurations because the boards differ: the flight computer is an
-    // ESP32-S3 (xtensa-esp32s3-elf) and the ground station is a classic ESP32
-    // (xtensa-esp32-elf). Pick one in the status bar; the difference that matters
-    // to IntelliSense is the variant pins header and the compiler triple.
+    // Two of the configurations are for boards, and they differ: the flight
+    // computer is an ESP32-S3 (xtensa-esp32s3-elf) and the ground station is a
+    // classic ESP32 (xtensa-esp32-elf). Pick one in the status bar; the difference
+    // that matters to IntelliSense is the variant pins header and the compiler
+    // triple.
+    //
+    // The third is not a board at all. firmware/tools/replay.cpp is a host-side
+    // harness that links src/Filters.cpp so the report figures come out of the
+    // same C++ that flies (firmware/tools/README.md). It includes "Arduino.h"
+    // expecting the stub in firmware/tools/arduino_shim/, so under either ESP32
+    // configuration it silently resolves to the real core header instead and the
+    // file fills with errors. Select "Replay harness (host)" when editing it.
     //
     // This file previously configured a 5 V Uno / ATmega328P for an Arduino sketch
     // under firmware/arduino/, and disclaimed the PlatformIO targets on the grounds
@@ -15,6 +23,24 @@
     //
     // The core version is pinned in these paths. After `arduino-cli core upgrade`,
     // update 3.3.11 here or IntelliSense goes red while the build stays fine.
+    //
+    // Each board config needs TWO trees, not one. cores/esp32/Arduino.h includes
+    // "freertos/FreeRTOS.h", which is not in the core at all -- it is in the
+    // per-chip ESP-IDF bundle under tools/esp32<chip>-libs/. Without that tree
+    // every single file that includes <Arduino.h> reports "cannot open source
+    // file freertos/FreeRTOS.h", which is most of the firmware.
+    //
+    // sdkconfig.h is the fiddly one: it is NOT under that bundle's include/, but
+    // in a sibling directory per flash/PSRAM mode (qio_qspi, dio_opi, ...). These
+    // point at qio_qspi, the default for a generic dev module. If you switch the
+    // board to OPI PSRAM, repoint it or sdkconfig.h stops resolving.
+    //
+    // forcedInclude exists because a .ino is not quite C++. arduino-cli prepends
+    // #include <Arduino.h> to every sketch before compiling it; the C/C++
+    // extension does not. MRCC_FlightComputer.ino opens with "src/Config.h",
+    // which is #pragma once and nothing else, so uint8_t in Config.h is undefined
+    // as far as IntelliSense is concerned and the sketch reports errors the real
+    // build never sees. Forcing the same header in matches what the build does.
     "configurations": [
         {
             "name": "Flight computer (ESP32-S3)",
@@ -24,13 +50,18 @@
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/cores/esp32",
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/variants/esp32s3",
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/libraries/**",
-                "${env:HOME}/Documents/Arduino/libraries/**"
+                "${env:HOME}/Documents/Arduino/libraries/**",
+                "${env:HOME}/Library/Arduino15/packages/esp32/tools/esp32s3-libs/3.3.11/include/**",
+                "${env:HOME}/Library/Arduino15/packages/esp32/tools/esp32s3-libs/3.3.11/qio_qspi/include"
             ],
             "defines": [
                 "ARDUINO=10819",
                 "ARDUINO_ARCH_ESP32",
                 "ESP32",
                 "ARDUINO_ESP32S3_DEV"
+            ],
+            "forcedInclude": [
+                "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/cores/esp32/Arduino.h"
             ],
             "compilerPath": "${env:HOME}/Library/Arduino15/packages/esp32/tools/esp-x32/2601/bin/xtensa-esp32s3-elf-g++",
             "cStandard": "c11",
@@ -44,7 +75,9 @@
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/cores/esp32",
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/variants/esp32",
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/libraries/**",
-                "${env:HOME}/Documents/Arduino/libraries/**"
+                "${env:HOME}/Documents/Arduino/libraries/**",
+                "${env:HOME}/Library/Arduino15/packages/esp32/tools/esp32-libs/3.3.11/include/**",
+                "${env:HOME}/Library/Arduino15/packages/esp32/tools/esp32-libs/3.3.11/qio_qspi/include"
             ],
             "defines": [
                 "ARDUINO=10819",
@@ -52,10 +85,25 @@
                 "ESP32",
                 "ARDUINO_ESP32_DEV"
             ],
+            "forcedInclude": [
+                "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/cores/esp32/Arduino.h"
+            ],
             "compilerPath": "${env:HOME}/Library/Arduino15/packages/esp32/tools/esp-x32/2601/bin/xtensa-esp32-elf-g++",
             "cStandard": "c11",
             "cppStandard": "c++17",
             "intelliSenseMode": "gcc-x64"
+        },
+        {
+            "name": "Replay harness (host)",
+            "includePath": [
+                "${workspaceFolder}/firmware/tools/arduino_shim",
+                "${workspaceFolder}/firmware/MRCC_FlightComputer/src"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/clang++",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "macos-clang-arm64"
         }
     ],
     "version": 4

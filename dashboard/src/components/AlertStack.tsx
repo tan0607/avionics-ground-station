@@ -26,8 +26,8 @@ function CopyableCommand({ command }: { command: string }) {
       type="button"
       onClick={() => {
         // Clipboard is unavailable on insecure origins other than localhost.
-        // Failing quietly is right: the command is on screen and readable, so
-        // the fix still works, it just needs typing.
+        // Failing quietly is right: the command is on screen in full, so the
+        // fix still works, it just needs typing.
         navigator.clipboard?.writeText(command).then(
           () => {
             setCopied(true)
@@ -39,8 +39,12 @@ function CopyableCommand({ command }: { command: string }) {
       }}
       title="Copy"
       className={cn(
-        "mt-1.5 block w-full truncate rounded-sm border border-hairline bg-surface-2",
-        "px-1.5 py-1 text-left font-mono text-[0.6875rem] text-ink-dim",
+        // Wraps rather than truncates. A command cut off at the card edge
+        // ("… -m backend.app …") cannot be typed by an operator whose console
+        // is the thing that is broken, and it hides which port or flag the fix
+        // actually names. Two lines of a 320px card is a cheap price for that.
+        "mt-1.5 block w-full break-all whitespace-pre-wrap rounded-sm border border-hairline bg-surface-2",
+        "px-1.5 py-1 text-left font-mono text-[0.6875rem] leading-snug text-ink-dim",
         "transition-colors hover:text-ink",
       )}
     >

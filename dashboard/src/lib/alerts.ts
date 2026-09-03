@@ -125,8 +125,9 @@ export function deriveAlerts(input: AlertInputs): Alert[] {
       detail: "The console cannot reach the server that feeds it. Everything on " +
               "screen is the last thing received, however old.",
       fix: "Check the terminal running the backend — it has probably stopped or " +
-           "crashed. Start it again and the console reconnects on its own.",
-      command: "backend/.venv/bin/python -m backend.app --serial /dev/tty.usbserial-XXXX",
+           "crashed. Start it again from the repo root and the console " +
+           "reconnects on its own. Add --demo to run without the receiver.",
+      command: "./start.command",
     })
     // A dead backend explains every symptom below it. Reporting those too would
     // bury the one alert that matters under its own consequences.
