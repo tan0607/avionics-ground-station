@@ -247,6 +247,16 @@ void printStatus() {
     Serial.print(groundAlt, 1);
     Serial.print("m");
   }
+
+  // Only when it has happened. On a clean board this line never
+  // appears, so its presence is the whole message.
+  if (baroSpikeCount > 0) {
+    Serial.print(" | SPIKES=");
+    Serial.print(baroSpikeCount);
+    Serial.print(" last=");
+    Serial.print(baroSpikeAlt, 0);
+    Serial.print("m");
+  }
   else {
     Serial.print(" | NO BARO - apogee would be TIMER ONLY");
   }

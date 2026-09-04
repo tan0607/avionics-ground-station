@@ -101,6 +101,12 @@ extern float pressure;     // hPa
 extern float baroTemp;     // degC
 extern float baroAltMSL;   // m, raw, referenced to SEA_LEVEL_HPA
 
+// Raised when readBaro()'s spike gate gives up and re-seeds on a
+// value it had been refusing. That is a step, not a measurement:
+// the altitude filter has to re-prime rather than integrate it.
+// Flight.cpp clears it.
+extern bool  baroReseeded;
+
 extern unsigned long lastBaroUpdate;
 
 

@@ -22,7 +22,7 @@ const float GRAVITY = 9.80665;
 // LORA (SX1278) - on the default SPI bus
 // -----------------------------------------------------
 
-#define LORA_SCK   12
+#define LORA_SCK   47
 #define LORA_MISO  13
 #define LORA_MOSI  11
 #define LORA_SS    10
@@ -77,7 +77,7 @@ const float GRAVITY = 9.80665;
 #define VEHICLE_A 1
 #define VEHICLE_B 2
 
-#define VEHICLE  VEHICLE_A          // <<<< CHANGE ME PER ROCKET
+#define VEHICLE  VEHICLE_B          // <<<< CHANGE ME PER ROCKET
 
 #if   VEHICLE == VEHICLE_A
   #define LORA_FREQ     433300000   // 433.3 MHz
@@ -181,6 +181,71 @@ const unsigned long GPS_START_TIMEOUT = 5000;
 const unsigned long BARO_INTERVAL = 50;    // 20 Hz sampling
 const unsigned long BARO_STALE    = 1000;  // no reading this long = down
 
+// ---- spike gate ----
+//
+// readBaro() used to pass anything that was not zero or
+// NaN. A1R has been seen reading 4000 m, which is about
+// 616 hPa against a real 1010 - not drift and not noise,
+// but a corrupted transfer arriving as a perfectly valid
+// float. Two vehicles run this firmware and only one does
+// it, so the cause is in the wiring, not here; this is the
+// net under it either way.
+//
+// It has to be a net, because that reading is not a
+// cosmetic problem. Fed to the alpha-beta filter a 4000 m
+// step becomes thousands of m/s, and the sample that comes
+// back becomes thousands negative - which is APOGEE_VEL
+// satisfied many times over. In COAST past MIN_ALT_GAIN
+// that is the charge.
+//
+// The gate is a RATE, not a distance, because the sample
+// interval is not fixed. readBaro() is rate-LIMITED to
+// BARO_INTERVAL, never rate-guaranteed: it runs when the
+// loop reaches it, and the loop stalls - an SD write can
+// block for a hundred ms or more. This file already
+// concedes that twice, at Flight.cpp's `dt > 0.5` stall
+// clamp and at serviceLogging()'s catch-up.
+//
+// A fixed distance would therefore tighten exactly when it
+// must not. 40 m per sample is 4x margin over a 200 m/s
+// burnout at the nominal 50 ms - and none at all after a
+// 200 ms stall, where the same 200 m/s moves the airframe
+// those same 40 m and the gate starts eating real flight.
+//
+// Measured against elapsed time instead, 800 m/s holds the
+// nominal behaviour (40 m at 50 ms) and widens with the gap
+// the way the airframe does, so the margin survives a stall
+// that a fixed threshold would not.
+const float BARO_MAX_RATE = 800.0;   // m/s implied between samples
+
+// Cap on the elapsed term, so a long gap cannot open the
+// gate wide enough to let a real spike through. 0.5 s is
+// this project's own idea of a stall (Flight.cpp), and
+// caps the allowance at 400 m - still an order of magnitude
+// under the 4000 m this exists for.
+const float BARO_GATE_DT_MAX = 0.5;  // s
+
+// A sensor that keeps saying the same new thing is telling
+// the truth, or is broken in a way rejection cannot fix.
+// Either way, stop arguing and re-seed - 10 samples is
+// 500 ms, comfortably inside BARO_STALE, so the gate can
+// never be what marks the barometer down.
+//
+// It also matters that a consistently offset reading is
+// still USEFUL: apogee is called on velocity, which is a
+// difference, so an altitude that is wrong by a constant
+// still finds the top.
+const uint8_t BARO_REJECT_RUN = 10;
+
+// Coarse absolute net, for the first sample only - there
+// is nothing to compare it against, and a garbage seed
+// makes the jump gate reject every good reading after it
+// until the run expires. 300 hPa is ~9000 m, far above
+// anything this airframe will see, so real flight never
+// touches this.
+const float   BARO_MIN_HPA    = 300.0;
+const float   BARO_MAX_HPA    = 1100.0;
+
 
 // -----------------------------------------------------
 // PYRO - ejection channel
@@ -268,6 +333,14 @@ const unsigned long PAD_STILL_TIME = 10000;  // must be still this long
 // no continuity) would otherwise repeat 20 times a
 // second for the whole pad wait.
 const unsigned long AUTO_ARM_RETRY = 5000;
+
+// A board that never settles arms nothing and, without
+// this, says nothing either - the silent no-arm is the
+// exact failure auto arm exists to remove, so it must
+// not come back in through the settle test. After this
+// long in PAD the board explains what is blocking it,
+// and repeats at the same interval.
+const unsigned long AUTO_ARM_STUCK_AFTER = 30000;
 
 // ---- launch ----
 // Acceleration is compared as a VECTOR MAGNITUDE.
