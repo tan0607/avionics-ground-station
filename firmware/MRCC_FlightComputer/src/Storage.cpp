@@ -342,6 +342,10 @@ void startNewLogFile() {
     "PKT,T,GD,GF,SAT,LAT,LON,GA,GS,CRS,"
     "AX,AY,AZ,GX,GY,GZ,MX,MY,MZ,VX,VY,HDG,VB,BOOT,"
     "ST,ALT,VZ,MAXALT,PRS,BTEMP,ARM,FIR,"
+    // ALT is AGL, measured against GREF. Without GREF in the file
+    // there is no way back to MSL after the flight, and no way to
+    // tell a pad that moved (weather drift) from a rocket that did.
+    "GREF,"
     // Filtered twins. Every column from here on has a raw
     // counterpart above it, so one flight gives you both
     // the before and the after with nothing to line up.
@@ -427,7 +431,7 @@ static void logOneLine() {
     line, sizeof(line),
     "%lu,%.2f,%d,%d,%d,%.6f,%.6f,%.1f,%.2f,%.0f,"
     "%.2f,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.2f,%.2f,%.0f,%.2f,%lu,"
-    "%d,%.2f,%.2f,%.2f,%.2f,%.1f,%d,%d,"
+    "%d,%.2f,%.2f,%.2f,%.2f,%.1f,%d,%d,%.2f,"
     "%.2f,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,"
     "%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.0f,%d,%.0f",
     packetNumber, millis() / 1000.0,
@@ -436,7 +440,7 @@ static void logOneLine() {
     ax, ay, az, gx, gy, gz, mx, my, mz,
     vx, vy, heading, vbat, bootCount,
     flightState, altFiltered, vertVel, maxAlt, pressure, baroTemp,
-    pyroArmed ? 1 : 0, pyroFired ? 1 : 0,
+    pyroArmed ? 1 : 0, pyroFired ? 1 : 0, groundAlt,
     fax, fay, faz, fgx, fgy, fgz, fmx, fmy, fmz,
     accelNormRaw, accelNormFilt,
     rollAcc, pitchAcc, rollLpf, pitchLpf,

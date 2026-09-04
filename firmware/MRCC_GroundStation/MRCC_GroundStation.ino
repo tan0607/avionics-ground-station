@@ -46,9 +46,16 @@
 // box would decode BOTH rockets - PKT jumps, the loss
 // count turns to noise, the map hops between airframes -
 // while the two transmitters collide on air and neither
-// link survives. One rocket alone already radiates ~73%
-// of the time (two ~182 ms copies per 500 ms window), so
+// link survives. One rocket alone already radiates 87% of
+// the time - two 187 ms copies plus the 60 ms COPY_GAP,
+// inside a 500 ms window, leaving 66 ms of margin - so
 // there is no room to share.
+//
+// That figure used to read ~73%, from two ~182 ms copies
+// and no gap. The gap was always there, and the packet
+// has since grown to 237 bytes. TX_Doctor's test 3
+// measures it on the bench; re-read it after any change
+// to the packet, because the number moves with it.
 //
 // Both sit inside Malaysia's 433 MHz ISM allocation
 // (MCMC: 433.05 - 434.79 MHz) and are 800 kHz apart,
@@ -165,9 +172,14 @@ static const char *NVS_NAMESPACE = "mrccgs";
 static const char *NVS_KEY_CH    = "ch";
 
 void onRx(int n) {
-  if (n <= 0 || n > 250 || gotPkt) return;   // 上一包还没处理完就跳过
+  if (n <= 0 || n > 255 || gotPkt) return;   // 上一包还没处理完就跳过
   int i = 0;
-  while (LoRa.available() && i < 250) gBuf[i++] = (char)LoRa.read();
+  // 255 is LoRa's payload limit and gBuf holds 255 + NUL, so nothing the
+  // radio can legally deliver is dropped here. This used to stop at 250,
+  // which truncated a long packet AND reported the truncated length - so
+  // the len= integrity check on the laptop passed and the frame decoded
+  // as a clean short one, missing its tail.
+  while (LoRa.available() && i < 255) gBuf[i++] = (char)LoRa.read();
   gBuf[i] = '\0';
   gLen  = i;
   gRssi = LoRa.packetRssi();

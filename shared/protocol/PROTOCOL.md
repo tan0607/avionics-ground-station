@@ -108,8 +108,14 @@ ground station, never the whole vehicle. The flight computer does not abort boot
 when a sensor's init fails and does not stall its loop when one dies in flight —
 it clears the bit, keeps transmitting at 4 Hz, and lets the operator see exactly
 what is down. The removed binary firmware enforced this in `lib/Subsystem`; the
-flight computer that flies today reports the same idea through MRCC's `SD=`/`BA=`
-flags, which `mrcc.py:health_from_fields` folds back into this byte.
+flight computer that flies today reports the same idea through MRCC's
+`SD=`/`BA=`/`IM=` flags, which `mrcc.py:health_from_fields` folds back into this
+byte.
+
+There is no `LORA` bit here or on the air, and that is deliberate: the
+transmitter only builds a packet when its own radio is up, so a downlinked radio
+flag could never read anything but `1`. Link health is whether frames arrive at
+all — `loss.py`'s job, not this byte's.
 
 **Init failure vs in-flight failure** is read off the *first* frame of a session:
 a bit clear from the very first packet never came up at all; a bit that goes

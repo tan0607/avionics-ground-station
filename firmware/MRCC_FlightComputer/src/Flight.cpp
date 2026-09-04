@@ -167,6 +167,18 @@ bool armFlight() {
 
   if (!armPyro()) return false;
 
+  // Arming re-zeros the altitude on the spot: this is the reference
+  // the whole flight is measured against, and the one MIN_ALT_GAIN
+  // gates the charge on, so it is worth a line in the log. The pad
+  // has usually drifted a few tenths of a metre since boot.
+  if (baroOK && groundPrimed) {
+    Serial.print("[BARO] Re-zeroed at arm: ground reference = ");
+    Serial.print(baroAltMSL, 1);
+    Serial.print(" m MSL (was ");
+    Serial.print(groundAlt, 1);
+    Serial.println(")");
+  }
+
   groundAlt   = baroAltMSL;
   altAGL      = 0.0;
   altFiltered = 0.0;
@@ -243,6 +255,58 @@ static void updateMagnitudes() {
 static void updateAltitude(float dt) {
   if (!baroOK || dt <= 0.0) return;
 
+  // A barometer reads ALTITUDE ABOVE SEA LEVEL for a fixed
+  // SEA_LEVEL_HPA, so on the pad it reports the pad's elevation for
+  // the day's weather - tens or hundreds of metres, never 0. The
+  // ground reference is what turns that into "0 m on the pad", and
+  // it has to exist BEFORE the first AGL sample, not one tick after.
+  //
+  // It used to be primed in the FS_PAD block below, which runs AFTER
+  // this function. So the first sample went through as a raw MSL
+  // reading and the alpha-beta filter treated the correction on the
+  // NEXT tick as a real 45 m drop in 50 ms: altitude rang from +45 m
+  // down through -7 m, vertical velocity spiked past -90 m/s, and
+  // maxAlt latched ~31 m before anyone touched the arm key. It
+  // settled after ~2 s, but maxAlt kept the bogus peak and MX
+  // downlinked it until the next arm.
+  //
+  // pressure > 0 is the test for "a real reading has landed":
+  // readBaro() sets it only after rejecting the zero/NaN a dead
+  // sensor returns. baroOK alone is not enough - initBaro() succeeds
+  // a full loop pass before the first sample, and priming off
+  // baroAltMSL's initial 0.0 would rebuild the same bug.
+  if (!groundPrimed && pressure > 0.0) {
+    if (flightState <= FS_ARMED) {
+      groundAlt = baroAltMSL;
+
+      Serial.print("[BARO] Ground reference = ");
+      Serial.print(groundAlt, 1);
+      Serial.println(" m MSL - altitude now reads 0 m on the pad");
+    }
+    else {
+      // The barometer came up IN THE AIR - down at boot, recovered
+      // mid flight. There is no pad reading to reference, and taking
+      // the current one would declare this altitude zero, which is
+      // the number MIN_ALT_GAIN gates the charge on: the deployment
+      // would be locked out for the rest of the flight.
+      //
+      // So fall back to raw MSL. The altitude then reads high by the
+      // site elevation, which is wrong but honest and monotonic, and
+      // vertVel is a difference so it is unaffected either way.
+      groundAlt = 0.0;
+
+      Serial.println("[BARO] RECOVERED IN FLIGHT - no pad reference.");
+      Serial.println("[BARO] ALT is MSL, not AGL. VZ is still good.");
+    }
+
+    groundPrimed = true;
+
+    // Re-seed the alpha-beta below rather than feed it a step of one
+    // whole site elevation, which is what rang the pad readout for
+    // two seconds and left a bogus maxAlt behind it.
+    filterPrimed = false;
+  }
+
   altAGL = baroAltMSL - groundAlt;
 
   if (!filterPrimed) {
@@ -291,19 +355,15 @@ void serviceFlight() {
 
       // Slowly follow the weather while we sit there.
       //
-      // Primed on the first real sample. Slewing up from
-      // zero instead would take ~15 s to converge, and
-      // anyone who armed during that window would get a
-      // ground reference hundreds of metres out - which
-      // feeds straight into the MIN_ALT_GAIN fire gate.
-      if (baroOK) {
-        if (!groundPrimed) {
-          groundAlt    = baroAltMSL;
-          groundPrimed = true;
-        }
-        else {
-          groundAlt = groundAlt * 0.99 + baroAltMSL * 0.01;
-        }
+      // Priming lives in updateAltitude() now, which runs before
+      // this and is the only place that can prime it in time. What
+      // is left here is the slow drift track, which must NOT run
+      // until there is a reference to drift from - slewing up from
+      // zero would take ~15 s, and anyone who armed inside that
+      // window would get a ground reference hundreds of metres out,
+      // which feeds straight into the MIN_ALT_GAIN fire gate.
+      if (baroOK && groundPrimed) {
+        groundAlt = groundAlt * 0.99 + baroAltMSL * 0.01;
       }
       break;
     }

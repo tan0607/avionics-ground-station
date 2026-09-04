@@ -9,6 +9,12 @@ TinyGPSPlus    gps;
 HardwareSerial GPSSerial(1);
 ICM_20948_I2C  myICM;
 
+// The chip answered begin() and took its config. NOT the same
+// question as imuOK, which asks whether samples are arriving -
+// see readIMU(). Keeping them apart is what stopped the DOWN /
+// RECOVERED flap described in Health.cpp.
+static bool imuChipOpen = false;
+
 
 // =====================================================
 // IMU
@@ -31,6 +37,7 @@ bool initIMU(bool verbose) {
       Serial.println("[IMU] Continuing WITHOUT the IMU.");
       Serial.println("[IMU] Will retry automatically every 5 s.");
     }
+    imuChipOpen = false;
     return false;
   }
 
@@ -58,6 +65,7 @@ bool initIMU(bool verbose) {
       Serial.print("[IMU] FAILED to set full scale: ");
       Serial.println(myICM.statusString());
     }
+    imuChipOpen = false;
     return false;
   }
 
@@ -79,13 +87,21 @@ bool initIMU(bool verbose) {
   // opportunity to re-measure it mid flight.
   filterReset();
 
-  lastImuUpdate = millis();
+  // lastImuUpdate is deliberately NOT stamped here. Opening the
+  // chip is not a sample, and stamping it was what let a sensor
+  // delivering nothing look fresh for another 2 s on every retry.
+  // Only readIMU() advances that clock, and only with data in hand.
+  imuChipOpen = true;
   return true;
 }
 
 
 void readIMU() {
-  if (!imuOK) {
+  // Gated on the chip being open, NOT on imuOK - a down IMU still
+  // has to be polled or it could never come back. This is also why
+  // ax/ay/az no longer freeze at their last good values while the
+  // sensor is dead: nothing skips the read.
+  if (!imuChipOpen) {
     return;
   }
 
@@ -122,6 +138,12 @@ void readIMU() {
   filterUpdate();
 
   lastImuUpdate = millis();
+
+  // A real sample is the ONLY evidence that counts, so this is the
+  // one place imuOK is ever raised. Silently: serviceHealth() owns
+  // the announcement and the recovery counter, the same way it owns
+  // them for every other subsystem.
+  imuOK = true;
 }
 
 

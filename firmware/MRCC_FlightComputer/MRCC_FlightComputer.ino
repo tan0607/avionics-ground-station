@@ -79,7 +79,22 @@ void setup() {
 
   initGPS();
 
-  imuOK   = initIMU(true);
+  // initIMU() only proves the chip answers on I2C. imuOK means
+  // SAMPLES ARE ARRIVING, so wait briefly for a real one - exactly
+  // as initGPS() waits for its first NMEA - or the READY banner
+  // below reports a handshake and calls it a working sensor.
+  if (initIMU(true)) {
+    unsigned long t0 = millis();
+    while (!imuOK && millis() - t0 < IMU_STALE) {
+      readIMU();          // raises imuOK on the first real sample
+      delay(2);
+    }
+
+    if (!imuOK) {
+      Serial.println("[IMU] WARNING - chip answers but has sent no");
+      Serial.println("[IMU] data. Continuing - it may appear later.");
+    }
+  }
 
   // Starts the gyro zero-rate measurement. It collects
   // across normal loop passes and needs the board held
