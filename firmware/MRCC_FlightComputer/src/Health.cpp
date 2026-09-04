@@ -13,6 +13,17 @@
 static unsigned long lastHealthCheck = 0;
 static unsigned long lastSdRetry     = 0;
 
+// What the log last told the operator about the IMU. readIMU()
+// raises imuOK the instant a sample lands, with no output; this is
+// what turns that into exactly one RECOVERED line.
+//
+// Seeded from the boot state on the first pass, because setup()'s
+// READY banner is already the announcement for whatever the IMU was
+// doing then - a healthy board must not report a recovery it never
+// needed, and one whose sensor only turned up late must.
+static bool imuAnnounced   = false;
+static bool imuAnnouncedOK = false;
+
 static unsigned long lastRateLines = 0;
 static unsigned long lastRateTime  = 0;
 
@@ -82,25 +93,55 @@ void serviceHealth() {
   lastHealthCheck = millis();
 
   // ---- IMU ----
+  // imuOK means SAMPLES ARE ARRIVING. It does not mean the chip
+  // answers on I2C, and the difference is the whole point of this
+  // block: an ICM whose data path has stopped still acknowledges
+  // begin() and every config write, quite happily, forever.
+  //
+  // This used to recover on initIMU() alone, and initIMU() used to
+  // stamp lastImuUpdate. So a sensor delivering nothing was handed
+  // both a clean bill of health and a fresh staleness clock every
+  // 5 s, and printed
+  //
+  //     [IMU] No data for 2 s - marking DOWN
+  //     [IMU] *** RECOVERED *** (recovery #41)
+  //
+  // back to back, forever, while the [SYS] line above and the
+  // downlink both read IMU=OK. A flapping recovery counter was the
+  // only tell, and it also reset the filter chain every 5 s.
+  //
+  // Now this block only ever takes the IMU DOWN and re-opens the
+  // chip. readIMU() puts it back up, because readIMU() is the only
+  // code that ever sees an actual sample.
+  if (!imuAnnounced) {
+    imuAnnounced   = true;
+    imuAnnouncedOK = imuOK;
+  }
+
   if (imuOK && millis() - lastImuUpdate > IMU_STALE) {
     Serial.println("[IMU] No data for 2 s - marking DOWN");
     imuOK = false;
+    imuAnnouncedOK = false;
   }
 
-  if (!imuOK) {
-    if (initIMU(false)) {
-      imuOK = true;
-      imuRecoveries++;
-      Serial.print("[IMU] *** RECOVERED *** (recovery #");
-      Serial.print(imuRecoveries);
-      Serial.println(")");
+  // Re-opening a wedged chip is worth a try; claiming it worked is
+  // not this function's call to make.
+  if (!imuOK) initIMU(false);
 
-      // An IMU that was missing at boot never got a
-      // zero-rate measurement. Take it now if the board
-      // is still on the pad. Once flying, a moving
-      // airframe rejects its own samples anyway.
-      if (!gyroCalDone && !gyroCalibrating()) startGyroCal();
-    }
+  // readIMU() has since seen real data. The flight logic already
+  // acted on that the moment it happened - this is only the log
+  // line and the pad-only gyro re-zero catching up.
+  if (imuOK && !imuAnnouncedOK) {
+    imuAnnouncedOK = true;
+    imuRecoveries++;
+    Serial.print("[IMU] *** RECOVERED *** (recovery #");
+    Serial.print(imuRecoveries);
+    Serial.println(")");
+
+    // An IMU that was missing at boot never got a zero-rate
+    // measurement. Take it now if the board is still on the pad.
+    // Once flying, a moving airframe rejects its own samples anyway.
+    if (!gyroCalDone && !gyroCalibrating()) startGyroCal();
   }
 
   // ---- BARO ----
