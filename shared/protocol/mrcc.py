@@ -82,11 +82,18 @@ FIELD_ALIASES: dict[str, str] = {
 }
 
 # --- what the transmitter calls each flight phase --------------------------
-# MRCC ships five phases; packet.FlightState has seven. The two extra states the
-# protocol distinguishes (COAST after burnout, MAIN after drogue) are NOT
-# inferable from an MRCC frame, so ASCENT and DESCENT map to the earlier member
-# of each pair. The unmapped original string travels on the frame as
-# `state_name`, so nothing here is lossy at the point of decode.
+# The vehicle ships seven phases (Flight.cpp's stateName) and so does
+# packet.FlightState, but they are not the same seven: MRCC has ARMED, the
+# protocol additionally splits COAST out of ascent and MAIN out of descent.
+# Those two splits are NOT inferable from an MRCC frame, so ASCENT and DESCENT
+# map to the earlier member of each pair. The unmapped original string travels
+# on the frame as `state_name`, so nothing here is lossy at the point of decode.
+#
+# ARMED was missing from this table for as long as it has existed, and the cost
+# was not a missing label: an unmatched word falls back to PAD, so an armed
+# vehicle reported itself as sitting safe on the pad while its pyro bus was
+# live. backend/tests.py reads Flight.cpp's stateName() and fails if any word
+# it can return is unmapped here.
 #
 # Matched by PREFIX (longest first), because the transmitter abbreviates the same
 # phase differently between builds — ASCENT and ASC are one state, and a rocket
@@ -94,6 +101,7 @@ FIELD_ALIASES: dict[str, str] = {
 # far worse failure than a state this table has to guess at.
 STATE_PREFIXES: tuple[tuple[str, int], ...] = (
     ("PAD", packet.FlightState.PAD),
+    ("ARM", packet.FlightState.ARMED),        # ARM / ARMED
     ("BOOST", packet.FlightState.BOOST),
     ("ASC", packet.FlightState.BOOST),        # ASC / ASCENT
     ("COAST", packet.FlightState.COAST),

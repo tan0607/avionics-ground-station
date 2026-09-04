@@ -103,6 +103,7 @@ EVENT_COLUMNS = [
 # Friendly event label per flight state, for events.csv readability.
 _EVENT_LABEL = {
     packet.FlightState.PAD: "pad",
+    packet.FlightState.ARMED: "armed",
     packet.FlightState.BOOST: "liftoff",
     packet.FlightState.COAST: "burnout",
     packet.FlightState.APOGEE: "apogee",

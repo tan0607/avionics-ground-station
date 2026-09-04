@@ -73,6 +73,17 @@ Python `struct` format (little-endian, no padding): BODY = `<BHBIhhiihBBBBBB` (2
 | 4     | DROGUE | descent under drogue     |
 | 5     | MAIN   | descent under main chute |
 | 6     | LANDED | on the ground            |
+| 7     | ARMED  | on the pad, pyro armed   |
+
+`ARMED` is **7 and not 1** because 0–6 were already on the wire, in every
+`telemetry.csv` on disk and in the PLDR notebook. Inserting it chronologically
+would have silently reinterpreted every recorded flight. Chronological order is
+a display concern — the dashboard's timeline carries its own.
+
+It was missing entirely until 2026-09-04, and the cost was not a missing label:
+an unmapped phase word falls back to `PAD`, so an armed vehicle reported itself
+as sitting safe on the pad with its pyro bus live. `backend/tests.py` now reads
+`Flight.cpp`'s `stateName()` and fails if any word it can return is unmapped.
 
 **gps_fix**: 0 = no fix, 2 = 2D, 3 = 3D.
 

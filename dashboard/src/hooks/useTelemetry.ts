@@ -26,6 +26,7 @@ import {
   FlightState,
   LINK_STALE_MS,
   PACKET_INTERVAL_MS,
+  hasLaunched,
   isDescending,
   isFlagKnown,
   normalizeFrame,
@@ -289,7 +290,7 @@ export function useTelemetry(): TelemetryState {
       lastArrivalRef.current = now
       frameRef.current = frame
 
-      if (launchHostRef.current == null && frame.flightState !== FlightState.PAD) {
+      if (launchHostRef.current == null && hasLaunched(frame.flightState)) {
         launchHostRef.current = frame.hostTime
         launchAtRef.current = now
         // The chart's own x for this instant. Recorded even if this frame is a
@@ -307,7 +308,7 @@ export function useTelemetry(): TelemetryState {
         if (chartRef.current.liftoffT != null && chartRef.current.landedT == null) {
           chartRef.current.landedT = frame.onboardMs / 1000
         }
-      } else if (chartRef.current.landedT != null && frame.flightState !== FlightState.PAD) {
+      } else if (chartRef.current.landedT != null && hasLaunched(frame.flightState)) {
         chartRef.current.landedT = null
       }
       if (frame.baroAltM > maxAltRef.current) maxAltRef.current = frame.baroAltM

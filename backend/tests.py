@@ -25,6 +25,7 @@ from .session import (
     recorded_flight_detail,
     FlightFolderNotEmpty,
     delete_recorded_flight,
+    event_label,
     file_snapshot,
     recorded_flights,
     resolve_recorded_flight_dir,
@@ -493,6 +494,76 @@ def test_mrcc_reports_the_pyro_state_it_is_sent() -> None:
     w = telemetry_to_wire(f.telemetry, host_time_ms=1_700_000_000_000, flags_known=fknown)
     assert w["pyro_fired"] is True and w["armed"] is True
     assert w["flags_known"] & packet.FLAG_PYRO_FIRED
+
+
+def test_every_flight_phase_the_firmware_sends_is_recognised() -> None:
+    """The vehicle's stateName(), checked against this parser's prefix table.
+
+    The twin of the field-name test above, and it exists because the same class
+    of silence bit twice. An unmapped phase word does not raise: decode_line
+    falls back to PAD. So ARMED -- a state the vehicle has always had -- decoded
+    as "on the pad, safe" on a console watching a vehicle whose pyro bus was
+    live. The dashboard flagged it only because MrccParser happens to count
+    unknown_states; nothing failed, and nothing had to.
+
+    A phase must map to SOME FlightState. It need not be its own: the protocol
+    deliberately folds ASCENT into BOOST and DESCENT into DROGUE, because an
+    MRCC frame cannot distinguish the pairs. Falling back to PAD is the one
+    outcome this rejects.
+    """
+    src = Path(__file__).resolve().parent.parent / "firmware/MRCC_FlightComputer/src/Flight.cpp"
+    assert src.is_file(), f"flight state source moved: {src}"
+
+    body = src.read_text()
+    start = body.index("stateName(uint8_t")
+    block = body[start:body.index("}", body.index("switch", start))]
+
+    # `case FS_ARMED:   return "ARMED";` -> ARMED. The default arm returns "?",
+    # which is not a phase and is excluded by the character class.
+    words = sorted(set(re.findall(r'return\s+"([A-Z]+)"', block)))
+    assert "PAD" in words and "ARMED" in words, words   # the extraction works
+
+    unmapped = [w for w in words if mrcc.state_to_flight_state(w) is None]
+    assert not unmapped, (
+        f"firmware sends flight phases {unmapped} and mrcc.py maps none of them "
+        f"-- each one decodes as PAD, so the console reports a vehicle that is "
+        f"not on the pad as being on it. Add a prefix to STATE_PREFIXES."
+    )
+
+    # ARMED specifically must NOT collapse into PAD, which is what it did.
+    assert mrcc.state_to_flight_state("ARMED") == packet.FlightState.ARMED
+    assert mrcc.state_to_flight_state("ARM") == packet.FlightState.ARMED
+
+    # Every mapped phase needs a mission-event label, or the Log view records
+    # `state_7` for the moment the pyro went live.
+    for w in words:
+        state = mrcc.state_to_flight_state(w)
+        assert not event_label(state).startswith("state_"), (w, state)
+
+
+def test_armed_is_on_the_pad_not_in_flight() -> None:
+    """ARMED must not read as launched anywhere that matters.
+
+    The console starts its T+ clock on the first frame that is not PAD. Adding
+    a state without touching that test would have started the mission clock the
+    moment someone armed -- minutes before the motor, on every chart and every
+    recorded flight. hasLaunched() in the dashboard carries the same rule; this
+    asserts the backend half.
+    """
+    body = ("MRCC,PKT=9,T=4.5,ST=ARMED,AL=0.2,VZ=0.0,MX=0.2,AR=1,FI=0,"
+            "GD=1,GF=1,SAT=9,AX=0.0,AY=0.0,AZ=9.8,SD=1,BA=1,IM=1")
+    f = _current_frame(body)
+    assert f.state_name == "ARMED" and f.state_recognised
+    assert f.telemetry.flight_state == packet.FlightState.ARMED
+
+    # The flag and the phase agree, and both are reported.
+    flags, fknown = mrcc.flags_from_fields(f)
+    assert fknown & FLAG_ARMED and flags & FLAG_ARMED
+
+    # A parser that fell back would record it as an unknown word; it must not.
+    p = mrcc.MrccParser()
+    list(p.feed(f"len={len(body)} RSSI=-50 SNR=9.0 | {body}\n".encode()))
+    assert p.unknown_states == set(), p.unknown_states
 
 
 def test_every_field_the_firmware_sends_has_somewhere_to_land() -> None:

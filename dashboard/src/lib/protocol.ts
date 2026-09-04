@@ -10,7 +10,7 @@
  */
 
 /**
- * flight_state — matches packet.FlightState (0..6). A `const` object + union
+ * flight_state — matches packet.FlightState (0..7). A `const` object + union
  * (not a TS `enum`) so the file stays fully erasable (Vite's erasableSyntaxOnly
  * / Node type-stripping): `FlightState.PAD` is a value, `FlightState` is a type.
  */
@@ -22,6 +22,10 @@ export const FlightState = {
   DROGUE: 4,
   MAIN: 5,
   LANDED: 6,
+  // Appended, mirroring packet.FlightState: 0-6 are on the wire and in every
+  // telemetry.csv already written, so ARMED could not take the slot it belongs
+  // in chronologically. FlightTimeline carries the display order.
+  ARMED: 7,
 } as const
 export type FlightState = (typeof FlightState)[keyof typeof FlightState]
 
@@ -33,6 +37,7 @@ export const FLIGHT_STATE_NAME: Record<FlightState, string> = {
   [FlightState.DROGUE]: "DROGUE",
   [FlightState.MAIN]: "MAIN",
   [FlightState.LANDED]: "LANDED",
+  [FlightState.ARMED]: "ARMED",
 }
 
 /**
@@ -336,9 +341,20 @@ export function failedSubsystems(frame: TelemetryFrame | null): string[] {
     .map((s) => s.name)
 }
 
-/** True once the vehicle has left the pad (T+ clock runs from the first BOOST). */
+/**
+ * True once the vehicle has left the pad (T+ clock runs from the first BOOST).
+ *
+ * ARMED is NOT launched. It is the pad with the pyro bus live, so treating it
+ * as flight would start the mission clock at the moment someone arms — which
+ * can be minutes before the motor lights, and would put a false T+ on every
+ * chart and every recorded flight.
+ *
+ * This is the single definition of "in flight" for the console; useTelemetry
+ * calls it rather than re-testing against PAD, because that test was written
+ * three times and each copy would have had to learn about ARMED separately.
+ */
 export function hasLaunched(state: FlightState): boolean {
-  return state !== FlightState.PAD
+  return state !== FlightState.PAD && state !== FlightState.ARMED
 }
 
 /** Descent phases — used by the no-deploy alarm and tilt emphasis. */

@@ -8,8 +8,12 @@ import { cn } from "@/lib/utils"
 import { Card } from "@/components/ui/card"
 import { FLIGHT_STATE_NAME, FlightState } from "@/lib/protocol"
 
+// CHRONOLOGICAL, which is not enum order: ARMED is 7 because the protocol
+// could only append it, and it belongs here between PAD and BOOST. This array
+// is the display contract; the enum value is just an identity.
 const ORDER: FlightState[] = [
   FlightState.PAD,
+  FlightState.ARMED,
   FlightState.BOOST,
   FlightState.COAST,
   FlightState.APOGEE,

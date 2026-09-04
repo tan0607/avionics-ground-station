@@ -40,6 +40,18 @@ class FlightState(IntEnum):
     DROGUE = 4   # descent under drogue
     MAIN = 5     # descent under main chute
     LANDED = 6
+    # APPENDED, not inserted between PAD and BOOST where it belongs
+    # chronologically. 0-6 are on the wire, in every telemetry.csv already
+    # written and in the PLDR notebook; renumbering them would silently
+    # reinterpret every flight on disk. Chronological order is a DISPLAY
+    # concern and the dashboard's timeline carries its own ordering.
+    #
+    # The vehicle has had this state since the beginning (Flight.cpp's
+    # FS_ARMED) and downlinks the word "ARMED". This enum did not have it, so
+    # mrcc.py could not map it and every armed frame decoded as PAD -- the
+    # console read "on the pad, safe" with the pyro bus live. That is the
+    # worst direction for this particular error to fail in.
+    ARMED = 7    # on the pad, pyro armed, waiting for the motor
 
 
 class GpsFix(IntEnum):
