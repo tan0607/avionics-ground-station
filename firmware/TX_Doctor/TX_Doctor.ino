@@ -599,6 +599,36 @@ static const char *versionMeaning(uint8_t v) {
 // it talk. This separates "nothing is connected" from "the
 // transfer is going wrong", which the version byte alone
 // cannot do.
+// Is a line FLOATING, or is something HOLDING it?
+//
+// The internal pull is ~45 kOhm, so anything actually
+// driving the pin - a short to a rail, or a powered chip -
+// wins against it, and a disconnected pin follows it. That
+// one distinction is the difference between "the wire is
+// not there" and "the wire is there and tied to ground",
+// which read identically to every SPI test in this sketch
+// and need completely different fixes.
+//
+//   pull-up 1, pull-down 0  ->  FLOATING: nothing connected
+//   pull-up 0, pull-down 0  ->  HELD LOW by something
+//   pull-up 1, pull-down 1  ->  HELD HIGH by something
+static const char *lineState(int pin) {
+  pinMode(pin, INPUT_PULLUP);
+  delayMicroseconds(500);
+  int up = digitalRead(pin);
+
+  pinMode(pin, INPUT_PULLDOWN);
+  delayMicroseconds(500);
+  int down = digitalRead(pin);
+
+  pinMode(pin, INPUT);
+
+  if (up && !down) return "floating  (nothing is connected to this pin)";
+  if (!up && !down) return "HELD LOW  (shorted to GND, or an unpowered chip)";
+  if (up && down)   return "HELD HIGH (shorted to 3V3)";
+  return "inverted?? (pull-up reads 0, pull-down reads 1 - impossible)";
+}
+
 static void reportStaticLines() {
   pinMode(PIN_MISO, INPUT);
   pinMode(PIN_SS, OUTPUT);
@@ -613,16 +643,30 @@ static void reportStaticLines() {
   digitalWrite(PIN_SS, HIGH);
 
   Serial.printf("  MISO with SS high = %d, with SS low = %d\n", misoIdle, misoSel);
-
-  // An idle SX1278 releases MISO when deselected, so on a
-  // board with no bus pullup it floats and reads either
-  // way. This is a hint, not a verdict - which is why it
-  // prints alongside the version byte rather than instead
-  // of it.
   if (misoIdle == misoSel) {
-    Serial.println("  (MISO did not respond to chip select - consistent with");
-    Serial.println("   a MISO or SS wire that is not reaching the module)");
+    Serial.println("  (MISO did not respond to chip select)");
   }
+
+  // The pull test, which is what actually locates it. MISO
+  // is the line that carries the answer, so it is the one
+  // that matters - but SCK/MOSI are printed too because a
+  // short between two of them shows up here as a pair.
+  Serial.println();
+  Serial.println("  Line states (internal pull-up vs pull-down):");
+  Serial.printf("    MISO GPIO%-2d  %s\n", PIN_MISO, lineState(PIN_MISO));
+  Serial.printf("    SCK  GPIO%-2d  %s\n", PIN_SCK,  lineState(PIN_SCK));
+  Serial.printf("    MOSI GPIO%-2d  %s\n", PIN_MOSI, lineState(PIN_MOSI));
+  Serial.printf("    DIO0 GPIO%-2d  %s\n", PIN_DIO0, lineState(PIN_DIO0));
+  Serial.println();
+  Serial.println("  A module that is POWERED and connected holds MISO one way");
+  Serial.println("  or the other. FLOATING means the wire is not arriving.");
+  Serial.println("  HELD LOW with no power at the chip is the same picture an");
+  Serial.println("  unpowered SX1278 makes: its protection diodes clamp the");
+  Serial.println("  line. Check the module's own 3V3 pad before its MISO pad.");
+
+  // Restore what the SPI bus expects.
+  pinMode(PIN_SS, OUTPUT);
+  digitalWrite(PIN_SS, HIGH);
 }
 
 void testPresence() {
