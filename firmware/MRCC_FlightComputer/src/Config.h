@@ -234,6 +234,7 @@ const float         PAD_ACCEL_TOL  = 0.5;    // m/s2 away from 9.81
 const float         PAD_GYRO_TOL   = 5.0;    // deg/s
 const unsigned long PAD_STILL_TIME = 10000;  // must be still this long
 
+
 // ---- launch ----
 // Acceleration is compared as a VECTOR MAGNITUDE.
 // Nothing in this project tracks orientation, so a
@@ -258,7 +259,28 @@ const uint8_t       APOGEE_CONFIRM   = 4;      // consecutive samples
 
 // BACKUP. Fires on a timer if the baro never calls it.
 // TUNE THIS FROM YOUR OWN SIM before you fly.
-const unsigned long APOGEE_TIMEOUT   = 12000;  // ms after launch
+//
+// It MUST sit LATER than the real apogee, with margin.
+// The COAST block races this against the baro and takes
+// whichever lands first, so a timeout set below apogee
+// does not wait for a sensor failure - it pre-empts the
+// baro on EVERY flight and deploys under thrust-side
+// velocity every time.
+//
+// It was 12000 against an OpenRocket apogee of 14.1 s,
+// which is exactly that failure: the charge would have
+// gone at T+12 s, 2.1 s early, with the airframe still
+// climbing at 20 m/s or better. Nothing in the log would
+// have looked wrong either - timerBackupUsed would just
+// be set, on a board whose baro was working perfectly.
+//
+// 19000 = 14.1 s x ~1.35. The margin covers what the sim
+// does not: motor lot variation, weathercocking, and a
+// headwind, any of which pushes apogee later. Below about
+// 17 s that margin is gone.
+//
+// Re-tune this whenever the motor or the mass changes.
+const unsigned long APOGEE_TIMEOUT   = 19000;  // ms after launch
 
 // ---- landing ----
 const float         LAND_ALT_BAND    = 2.0;    // m
