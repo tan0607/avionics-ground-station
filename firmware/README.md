@@ -9,6 +9,7 @@ Two Arduino sketches, two boards, one radio link.
 | `SD_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only SD card fault finder — no radio, no sensors. Flash it when the card won't mount, then drive it from the serial monitor |
 | `GS_Doctor/` | classic **ESP32** | `esp32:esp32:esp32` | bench-only LoRa link fault finder — the receiver's twin of `SD_Doctor`. Flash it to the ground-station board when packets stop arriving |
 | `TX_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only fault finder for the **flight computer** — radio, IMU, baro, GPS, brownout. The half of the link `GS_Doctor` cannot see |
+| `PinForce/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only drive test on the six LoRa lines. `TX_Doctor` reports a line as held; this one puts ~40 mA behind the pad to say whether that hold is a soft clamp or a hard short. Run it on both boards and diff the tables |
 
 ### When the link is silent, flash `GS_Doctor`
 
