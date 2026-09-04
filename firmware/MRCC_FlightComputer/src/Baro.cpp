@@ -7,14 +7,17 @@
 Adafruit_BMP280 bmp;
 uint8_t         baroAddress    = 0;
 unsigned long   baroSpikeCount = 0;
+float           baroSpikeAlt   = 0.0;
 
 static unsigned long lastBaroRead = 0;
 
 // Spike gate state. Seeded by the first accepted sample and
 // re-seeded whenever a rejected value refuses to go away.
-static float   lastGoodAlt = 0.0;
-static bool    altSeeded   = false;
-static uint8_t rejectRun   = 0;
+static float         lastGoodAlt  = 0.0;
+static unsigned long lastGoodTime = 0;
+static bool          altSeeded    = false;
+static uint8_t       rejectRun    = 0;
+
 
 
 // =====================================================
@@ -65,8 +68,9 @@ bool initBaro(bool verbose) {
   // worth keeping - the recovery path runs after the part has
   // been down, so the last good altitude is stale by however
   // long that took.
-  altSeeded = false;
-  rejectRun = 0;
+  altSeeded    = false;
+  rejectRun    = 0;
+  lastGoodTime = millis();
 
   if (verbose) {
     Serial.print("[BARO] SUCCESS at 0x");
@@ -89,8 +93,10 @@ bool initBaro(bool verbose) {
 void readBaro() {
   if (!baroOK) return;
 
-  if (millis() - lastBaroRead < BARO_INTERVAL) return;
-  lastBaroRead = millis();
+  unsigned long now = millis();
+
+  if (now - lastBaroRead < BARO_INTERVAL) return;
+  lastBaroRead = now;
 
   float pa = bmp.readPressure();      // Pa
 
@@ -101,7 +107,7 @@ void readBaro() {
   float alt = 44330.0 * (1.0 - pow(pa / (SEA_LEVEL_HPA * 100.0), 0.1903));
 
   // Absolute net, and only the seed really needs it: with no
-  // history the jump gate has nothing to measure against, and a
+  // history the rate gate has nothing to measure against, and a
   // garbage seed would make it reject every good sample after it
   // until the run expires.
   if (hPa < BARO_MIN_HPA || hPa > BARO_MAX_HPA) {
@@ -109,13 +115,23 @@ void readBaro() {
     return;
   }
 
-  // Jump gate. Rejecting deliberately leaves lastBaroUpdate alone,
-  // so a gate that somehow never let go would show up as the
-  // barometer going stale - a loud, already-handled failure - and
-  // never as a quietly wrong altitude. BARO_REJECT_RUN is short
-  // enough that it cannot get that far.
-  if (altSeeded && fabs(alt - lastGoodAlt) > BARO_MAX_JUMP) {
+  // Rate gate, measured against the time actually elapsed since the
+  // last accepted sample - NOT against BARO_INTERVAL, which is only
+  // a ceiling. The loop stalls, and a fixed distance would tighten
+  // precisely when the airframe has had longer to move; Config.h has
+  // the arithmetic.
+  //
+  // Rejecting deliberately leaves lastBaroUpdate alone, so a gate
+  // that somehow never let go would show up as the barometer going
+  // stale - a loud, already-handled failure - and never as a quietly
+  // wrong altitude. BARO_REJECT_RUN is short enough that it cannot
+  // get that far.
+  float dtGate = (now - lastGoodTime) / 1000.0;
+  if (dtGate > BARO_GATE_DT_MAX) dtGate = BARO_GATE_DT_MAX;
+
+  if (altSeeded && fabs(alt - lastGoodAlt) > BARO_MAX_RATE * dtGate) {
     baroSpikeCount++;
+    baroSpikeAlt = alt;
 
     if (++rejectRun < BARO_REJECT_RUN) {
       // Once per burst. A spike that repeats every few seconds for
@@ -127,7 +143,9 @@ void readBaro() {
         Serial.print(hPa, 1);
         Serial.print(" hPa) against ");
         Serial.print(lastGoodAlt, 0);
-        Serial.println(" m");
+        Serial.print(" m after ");
+        Serial.print((now - lastGoodTime));
+        Serial.println(" ms");
       }
       return;
     }
@@ -139,13 +157,14 @@ void readBaro() {
     Serial.println(" m");
   }
 
-  rejectRun   = 0;
-  lastGoodAlt = alt;
-  altSeeded   = true;
+  rejectRun    = 0;
+  lastGoodAlt  = alt;
+  lastGoodTime = now;
+  altSeeded    = true;
 
   pressure   = hPa;
   baroTemp   = bmp.readTemperature();
   baroAltMSL = alt;
 
-  lastBaroUpdate = millis();
+  lastBaroUpdate = now;
 }

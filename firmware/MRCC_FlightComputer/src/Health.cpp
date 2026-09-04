@@ -253,6 +253,9 @@ void printStatus() {
   if (baroSpikeCount > 0) {
     Serial.print(" | SPIKES=");
     Serial.print(baroSpikeCount);
+    Serial.print(" last=");
+    Serial.print(baroSpikeAlt, 0);
+    Serial.print("m");
   }
   else {
     Serial.print(" | NO BARO - apogee would be TIMER ONLY");

@@ -198,11 +198,32 @@ const unsigned long BARO_STALE    = 1000;  // no reading this long = down
 // satisfied many times over. In COAST past MIN_ALT_GAIN
 // that is the charge.
 //
-// MAX_JUMP is per BARO_INTERVAL, so 40 m at 20 Hz is
-// 800 m/s. Burnout on this vehicle is nearer 200 m/s, or
-// 10 m a sample, so real flight clears it with 4x to spare
-// and nothing physical gets rejected.
-const float   BARO_MAX_JUMP   = 40.0;   // m between samples
+// The gate is a RATE, not a distance, because the sample
+// interval is not fixed. readBaro() is rate-LIMITED to
+// BARO_INTERVAL, never rate-guaranteed: it runs when the
+// loop reaches it, and the loop stalls - an SD write can
+// block for a hundred ms or more. This file already
+// concedes that twice, at Flight.cpp's `dt > 0.5` stall
+// clamp and at serviceLogging()'s catch-up.
+//
+// A fixed distance would therefore tighten exactly when it
+// must not. 40 m per sample is 4x margin over a 200 m/s
+// burnout at the nominal 50 ms - and none at all after a
+// 200 ms stall, where the same 200 m/s moves the airframe
+// those same 40 m and the gate starts eating real flight.
+//
+// Measured against elapsed time instead, 800 m/s holds the
+// nominal behaviour (40 m at 50 ms) and widens with the gap
+// the way the airframe does, so the margin survives a stall
+// that a fixed threshold would not.
+const float BARO_MAX_RATE = 800.0;   // m/s implied between samples
+
+// Cap on the elapsed term, so a long gap cannot open the
+// gate wide enough to let a real spike through. 0.5 s is
+// this project's own idea of a stall (Flight.cpp), and
+// caps the allowance at 400 m - still an order of magnitude
+// under the 4000 m this exists for.
+const float BARO_GATE_DT_MAX = 0.5;  // s
 
 // A sensor that keeps saying the same new thing is telling
 // the truth, or is broken in a way rejection cannot fix.

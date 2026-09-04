@@ -24,5 +24,9 @@ extern uint8_t         baroAddress;
 // link to this sensor is not clean - see Config.h.
 extern unsigned long   baroSpikeCount;
 
+// The last value thrown away, so the bench can see the size of
+// the thing without watching serial at the moment it happens.
+extern float           baroSpikeAlt;
+
 bool initBaro(bool verbose);
 void readBaro();
