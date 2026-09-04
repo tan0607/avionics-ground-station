@@ -165,9 +165,14 @@ static const char *NVS_NAMESPACE = "mrccgs";
 static const char *NVS_KEY_CH    = "ch";
 
 void onRx(int n) {
-  if (n <= 0 || n > 250 || gotPkt) return;   // 上一包还没处理完就跳过
+  if (n <= 0 || n > 255 || gotPkt) return;   // 上一包还没处理完就跳过
   int i = 0;
-  while (LoRa.available() && i < 250) gBuf[i++] = (char)LoRa.read();
+  // 255 is LoRa's payload limit and gBuf holds 255 + NUL, so nothing the
+  // radio can legally deliver is dropped here. This used to stop at 250,
+  // which truncated a long packet AND reported the truncated length - so
+  // the len= integrity check on the laptop passed and the frame decoded
+  // as a clean short one, missing its tail.
+  while (LoRa.available() && i < 255) gBuf[i++] = (char)LoRa.read();
   gBuf[i] = '\0';
   gLen  = i;
   gRssi = LoRa.packetRssi();

@@ -17,7 +17,13 @@ unsigned long txBusyCount     = 0;
 unsigned long txTimeoutCount  = 0;
 unsigned long txFallbackCount = 0;
 
-char txPacket[250];
+// 255 is LoRa's hard payload limit; +1 for snprintf's NUL. Sized to the limit
+// rather than to the measured packet because the failure mode is silent: an
+// over-long packet is truncated at the buffer, the transmitter reports the
+// truncated length, and the ground station sees a well-formed frame that
+// simply stops early. The tail is the health block, so the fields that vanish
+// first are exactly the ones that say something is wrong.
+char txPacket[256];
 int  txPacketLen = 0;
 
 #define TX_IDLE  0
@@ -125,17 +131,33 @@ static void buildTelemetryPacket() {
   // the air they were pure redundancy. The card still
   // logs both at full precision.
   //
-  // Worst case measured at 231 bytes. The buffer is 250
-  // and LoRa's own hard limit is 255 - with VX/VY still
-  // in, worst case was 251 and the last fields would
-  // have been silently truncated on the ground.
+  // Typical packet is ~185 bytes; 231 was the worst
+  // measured, 237 since IM was added. Feeding every field
+  // its format-width maximum at once gives 252 - not a
+  // flight this rocket will have (it needs a 68-year
+  // packet count AND a 32 km altitude AND 16 g at the same
+  // instant) but it is above the old 250-byte buffer, so
+  // the buffer is now 256. With VX/VY still in, the same
+  // arithmetic gave 258 and the tail really would have
+  // gone.
+  //
+  // SD / BA / IM are the subsystem health bits. IM is here
+  // because the ground station had no way to see the IMU
+  // at all: it was guessing from AX/AY/AZ being non-zero,
+  // and a dead IMU used to downlink its last good sample
+  // forever, so the guess read OK through the failure.
+  // There is deliberately no LORA bit - serviceTelemetry()
+  // returns early when the radio is down, so the field
+  // could only ever be 1 in a packet that arrived. Silence
+  // is the honest signal there, and the ground station
+  // already reads it.
   snprintf(
     txPacket, sizeof(txPacket),
     "MRCC,PKT=%lu,T=%.1f,ST=%s,AL=%.1f,VZ=%.1f,MX=%.1f,AR=%d,FI=%d,"
     "GD=%d,GF=%d,SAT=%d,"
     "LAT=%.5f,LON=%.5f,GA=%.1f,GS=%.1f,CRS=%.0f,"
     "AX=%.2f,AY=%.2f,AZ=%.2f,GX=%.0f,GY=%.0f,GZ=%.0f,"
-    "HDG=%.0f,SD=%d,BA=%d",
+    "HDG=%.0f,SD=%d,BA=%d,IM=%d",
     packetNumber, millis() / 1000.0,
     stateName(flightState), altFiltered, vertVel, maxAlt,
     pyroArmed ? 1 : 0, pyroFired ? 1 : 0,
@@ -147,7 +169,7 @@ static void buildTelemetryPacket() {
     txFiltered ? fax : ax, txFiltered ? fay : ay, txFiltered ? faz : az,
     txFiltered ? fgx : gx, txFiltered ? fgy : gy, txFiltered ? fgz : gz,
     txFiltered ? headingFilt : heading,
-    sdOK ? 1 : 0, baroOK ? 1 : 0
+    sdOK ? 1 : 0, baroOK ? 1 : 0, imuOK ? 1 : 0
   );
 
   txPacketLen = strlen(txPacket);

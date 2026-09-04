@@ -7,19 +7,27 @@ Two Arduino sketches, two boards, one radio link.
 | `MRCC_FlightComputer/` | ESP32-**S3** | `esp32:esp32:esp32s3` | fly the rocket: sensors, filters, flight state, pyro, SD log, and a 2 Hz MRCC downlink |
 | `MRCC_GroundStation/` | classic **ESP32** | `esp32:esp32:esp32` | receive that downlink and print it to USB for the backend |
 | `SD_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only SD card fault finder — no radio, no sensors. Flash it when the card won't mount, then drive it from the serial monitor |
-
 Plus `tools/` — host-side, never compiled into the flight build. See
 [Filter figures](#filter-figures-tools).
 
 The ground station prints one line per frame:
 
 ```
-len=231 RSSI=-53 SNR=10.2 | MRCC,PKT=207,T=207.5,ST=LANDED,AL=0.0,...
+len=237 RSSI=-53 SNR=10.2 | MRCC,PKT=207,T=207.5,ST=LANDED,AL=0.0,...,SD=1,BA=1,IM=1
 ```
 
 That exact shape is the contract with the laptop — `shared/protocol/mrcc.py`
 parses it, and the `len=` field is what lets the backend tell a truncated frame
 from a clean one. Do not reorder or rename the prefix.
+
+**Renaming a payload key is a breaking change, even though nothing errors.**
+`mrcc.py` looks every field up by name, so an unknown key parses fine and lands
+in a catch-all — the field it was supposed to fill just keeps its default. That
+is how `ALT` → `AL` left the ground station showing 0 m altitude on a flying
+rocket with the real number sitting in `raw.log`. If you rename a key here, add
+the alias in `mrcc.py:FIELD_ALIASES` in the same commit;
+`backend/tests.py:test_every_field_the_firmware_sends_has_somewhere_to_land`
+reads this sketch's format string and fails if you don't.
 
 ---
 
