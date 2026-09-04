@@ -239,6 +239,12 @@ void printStatus() {
     Serial.print(vertVel, 1);
     Serial.print("m/s max=");
     Serial.print(maxAlt, 1);
+    // What alt is measured FROM. On the pad alt should read ~0 and
+    // this should read the site elevation for the day's pressure; if
+    // alt is sitting at some odd number instead, this line says
+    // whether the reference is wrong or the sensor is.
+    Serial.print("m ref=");
+    Serial.print(groundAlt, 1);
     Serial.print("m");
   }
   else {
