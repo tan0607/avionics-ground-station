@@ -28,6 +28,7 @@ static unsigned long burnoutSince   = 0;
 static unsigned long landRefTime    = 0;
 static unsigned long padSince       = 0;
 static unsigned long lastAutoArmTry = 0;
+static unsigned long lastStuckReport = 0;
 
 static float   landRef        = 0.0;
 static uint8_t launchSamples  = 0;
@@ -41,6 +42,7 @@ static void enterState(uint8_t s);
 static void updateAltitude(float dt);
 static void updateMagnitudes();
 static void announceAutoArm();
+static void reportAutoArmStuck();
 static void tryAutoArm();
 
 
@@ -270,6 +272,59 @@ void disarmFlight() {
 // limited to one per AUTO_ARM_RETRY.
 // =====================================================
 
+// Says why the board is not arming. Reached only when the
+// settle test has been failing for AUTO_ARM_STUCK_AFTER,
+// so it costs nothing on a normal pad wait.
+//
+// The case worth naming explicitly is the last one. A
+// scale or offset error puts |a| outside the window for
+// good on a board that is genuinely sitting still, and
+// PAD_ACCEL_TOL is 0.5 against a part whose zero-g offset
+// alone is specified at +-50 mg. Nothing about that looks
+// like a fault from the outside: the board sits there,
+// logging and transmitting perfectly, and simply never
+// arms. Two vehicles means two parts, and the second one
+// is a different die.
+static void reportAutoArmStuck() {
+  Serial.println();
+  Serial.println("[FLIGHT] *** NOT ARMED YET ***");
+  Serial.print  ("[FLIGHT] In PAD for ");
+  Serial.print((millis() - padSince) / 1000);
+  Serial.println(" s - the settle test has not passed.");
+
+  if (!imuOK) {
+    Serial.println("[FLIGHT] IMU is DOWN - waiting on the baro settle instead.");
+    if (!baroOK) {
+      Serial.println("[FLIGHT] Baro is DOWN too. NOTHING can arm this board.");
+    }
+    return;
+  }
+
+  if (!gyroCalDone) {
+    Serial.println("[FLIGHT] Gyro is NOT zeroed - hold the board still, or run K.");
+  }
+
+  Serial.print("[FLIGHT] |a| = ");
+  Serial.print(accelMag, 2);
+  Serial.print(" m/s2   needs ");
+  Serial.print(GRAVITY - PAD_ACCEL_TOL, 2);
+  Serial.print(" .. ");
+  Serial.println(GRAVITY + PAD_ACCEL_TOL, 2);
+
+  Serial.print("[FLIGHT] |g| = ");
+  Serial.print(gyroMag, 1);
+  Serial.print(" deg/s   needs under ");
+  Serial.println(PAD_GYRO_TOL, 1);
+
+  if (gyroMag < PAD_GYRO_TOL && fabs(accelMag - GRAVITY) >= PAD_ACCEL_TOL) {
+    Serial.println("[FLIGHT] Gyro is quiet, so the board IS still - it is |a|");
+    Serial.println("[FLIGHT] that is out of range. This part reads off by more");
+    Serial.println("[FLIGHT] than PAD_ACCEL_TOL and will NEVER auto-arm until");
+    Serial.println("[FLIGHT] that tolerance is widened to match the hardware.");
+  }
+}
+
+
 static void tryAutoArm() {
   if (autoArmBlocked || pyroFired)                  return;
   if (millis() - lastAutoArmTry < AUTO_ARM_RETRY)   return;
@@ -278,7 +333,14 @@ static void tryAutoArm() {
                ? (gyroCalDone && millis() - stillSince >= PAD_STILL_TIME)
                : (baroOK      && millis() - padSince   >= PAD_STILL_TIME);
 
-  if (!settled) return;
+  if (!settled) {
+    if (millis() - padSince        >= AUTO_ARM_STUCK_AFTER &&
+        millis() - lastStuckReport >= AUTO_ARM_STUCK_AFTER) {
+      lastStuckReport = millis();
+      reportAutoArmStuck();
+    }
+    return;
+  }
 
   lastAutoArmTry = millis();
 

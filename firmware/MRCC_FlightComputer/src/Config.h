@@ -22,7 +22,7 @@ const float GRAVITY = 9.80665;
 // LORA (SX1278) - on the default SPI bus
 // -----------------------------------------------------
 
-#define LORA_SCK   12
+#define LORA_SCK   47
 #define LORA_MISO  13
 #define LORA_MOSI  11
 #define LORA_SS    10
@@ -77,7 +77,7 @@ const float GRAVITY = 9.80665;
 #define VEHICLE_A 1
 #define VEHICLE_B 2
 
-#define VEHICLE  VEHICLE_A          // <<<< CHANGE ME PER ROCKET
+#define VEHICLE  VEHICLE_B          // <<<< CHANGE ME PER ROCKET
 
 #if   VEHICLE == VEHICLE_A
   #define LORA_FREQ     433300000   // 433.3 MHz
@@ -268,6 +268,14 @@ const unsigned long PAD_STILL_TIME = 10000;  // must be still this long
 // no continuity) would otherwise repeat 20 times a
 // second for the whole pad wait.
 const unsigned long AUTO_ARM_RETRY = 5000;
+
+// A board that never settles arms nothing and, without
+// this, says nothing either - the silent no-arm is the
+// exact failure auto arm exists to remove, so it must
+// not come back in through the settle test. After this
+// long in PAD the board explains what is blocking it,
+// and repeats at the same interval.
+const unsigned long AUTO_ARM_STUCK_AFTER = 30000;
 
 // ---- launch ----
 // Acceleration is compared as a VECTOR MAGNITUDE.
