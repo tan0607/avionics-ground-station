@@ -8,6 +8,7 @@ Two Arduino sketches, two boards, one radio link.
 | `MRCC_GroundStation/` | classic **ESP32** | `esp32:esp32:esp32` | receive that downlink and print it to USB for the backend |
 | `SD_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only SD card fault finder — no radio, no sensors. Flash it when the card won't mount, then drive it from the serial monitor |
 | `GS_Doctor/` | classic **ESP32** | `esp32:esp32:esp32` | bench-only LoRa link fault finder — the receiver's twin of `SD_Doctor`. Flash it to the ground-station board when packets stop arriving |
+| `TX_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only fault finder for the **flight computer** — radio, IMU, baro, GPS, brownout. The half of the link `GS_Doctor` cannot see |
 
 ### When the link is silent, flash `GS_Doctor`
 
@@ -36,6 +37,44 @@ library you are trying to diagnose.
 
 Tests 1 and 2 run automatically at boot. Tests 4, 5 and 6 need the rocket powered
 and transmitting.
+
+### …and `TX_Doctor` for the other end
+
+`GS_Doctor` can only tell you what does or does not arrive. Every fault on the
+rocket end is invisible to it, so the transmitter gets its own.
+
+| key | test | the question it answers |
+|---|---|---|
+| 1 | Radio present? | same two-direction SPI handshake as `GS_Doctor` |
+| 2 | Link parameters | modem readback vs the contract, with the reset-default column that makes a refused write visible |
+| 3 | **Transmit** | the one worth flashing for — see below |
+| 4 | DIO0 TxDone | `Radio.cpp` transmits async and waits on this interrupt. Unwired, telemetry **does not stop** — it falls back to the `TX_MAX_AIR` timeout and pays up to 300 ms of a 500 ms budget per packet, silently. `txFallbackCount` is the only evidence and nobody reads it |
+| 5 | Power sweep | transmits at rising power to find where the supply gives out. It can't measure sag (no VBAT divider), so it stamps the level into RTC memory — **if the board reboots, that is the result**; come back and read the boot banner |
+| 6 | Listen | the other half of `GS_Doctor`'s beacon. Run both and the pair proves the link in each direction with nobody in a field |
+| 7 | I2C bus scan | both sensors share one bus, so one device holding SDA low takes out the other — the symptom is "the barometer died" when the fault is the IMU |
+| 8 | Sensors | IMU **sample rate**, not just "the chip answers" — plus **which axis reads ±1 g upright**, which is the one measurement needed to fix the rotated mount. Then a compensated baro pressure and MSL altitude |
+| 9 | GPS | raw NMEA with a baud hunt — a module reflashed to 38400 looks exactly like a module that isn't wired |
+
+**Test 3 is the headline.** Air time is a *fingerprint* of the modem settings, so
+a stopwatch verifies SF and bandwidth with no receiver, no second person, and no
+antenna range — and it catches what test 2 can't: a register that reads back
+correctly while the modem does something else.
+
+| payload | SF7 (the contract) | SF8 | SF9 |
+|---|---|---|---|
+| 237 bytes | **187 ms** | 328 ms | 584 ms |
+
+At SF9 a single copy outlasts the whole 500 ms `SEND_INTERVAL`. At SF8 every
+transmission would exceed `TX_MAX_AIR` and the fallback would fire on every
+packet with telemetry still flowing. A board on the wrong spreading factor can't
+hide from a clock.
+
+Test 3 also reports the duty cycle, which moves whenever the packet grows: two
+187 ms copies plus the 60 ms gap is 434 ms of a 500 ms window — **87%**, with
+66 ms of margin. Re-run it after adding a field.
+
+**Pyro is never touched.** The gate pin is driven LOW in `setup()` and never
+raised; the sketch has no fire path at all.
 
 Plus `tools/` — host-side, never compiled into the flight build. See
 [Filter figures](#filter-figures-tools).

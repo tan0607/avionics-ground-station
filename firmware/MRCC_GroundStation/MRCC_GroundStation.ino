@@ -46,9 +46,16 @@
 // box would decode BOTH rockets - PKT jumps, the loss
 // count turns to noise, the map hops between airframes -
 // while the two transmitters collide on air and neither
-// link survives. One rocket alone already radiates ~73%
-// of the time (two ~182 ms copies per 500 ms window), so
+// link survives. One rocket alone already radiates 87% of
+// the time - two 187 ms copies plus the 60 ms COPY_GAP,
+// inside a 500 ms window, leaving 66 ms of margin - so
 // there is no room to share.
+//
+// That figure used to read ~73%, from two ~182 ms copies
+// and no gap. The gap was always there, and the packet
+// has since grown to 237 bytes. TX_Doctor's test 3
+// measures it on the bench; re-read it after any change
+// to the packet, because the number moves with it.
 //
 // Both sit inside Malaysia's 433 MHz ISM allocation
 // (MCMC: 433.05 - 434.79 MHz) and are 800 kHz apart,
