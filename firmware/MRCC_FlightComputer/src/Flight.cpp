@@ -26,17 +26,22 @@ static unsigned long lastFlightTick = 0;
 static unsigned long stillSince     = 0;
 static unsigned long burnoutSince   = 0;
 static unsigned long landRefTime    = 0;
+static unsigned long padSince       = 0;
+static unsigned long lastAutoArmTry = 0;
 
 static float   landRef        = 0.0;
 static uint8_t launchSamples  = 0;
 static uint8_t apogeeSamples  = 0;
 static bool    filterPrimed   = false;
 static bool    groundPrimed   = false;
+static bool    autoArmBlocked = false;
 
 
 static void enterState(uint8_t s);
 static void updateAltitude(float dt);
 static void updateMagnitudes();
+static void announceAutoArm();
+static void tryAutoArm();
 
 
 const char* stateName(uint8_t s) {
@@ -69,11 +74,31 @@ const char* stateName(uint8_t s) {
 // reason it is worth having.
 // =====================================================
 
+// A board that arms without being asked must say so at
+// boot. Someone who does not know it is coming will put
+// the thing down on the bench, walk off, and leave a
+// live state machine behind them.
+static void announceAutoArm() {
+#if AUTO_ARM_ENABLED
+  Serial.print("[FLIGHT] AUTO-ARM is ON - arms itself after ");
+  Serial.print(PAD_STILL_TIME / 1000);
+  Serial.println(" s of stillness");
+  Serial.println("[FLIGHT] X disarms it until the next power cycle");
+#else
+  Serial.println("[FLIGHT] AUTO-ARM is OFF - press A to arm");
+#endif
+}
+
+
 void initFlight(bool verbose) {
   flightState = FS_PAD;
+  padSince    = millis();
 
   if (!latchValid()) {
-    if (verbose) Serial.println("[FLIGHT] Clean start - state PAD");
+    if (verbose) {
+      Serial.println("[FLIGHT] Clean start - state PAD");
+      announceAutoArm();
+    }
     latchWrite(FS_PAD, false, 0);
     return;
   }
@@ -81,7 +106,10 @@ void initFlight(bool verbose) {
   uint8_t saved = latchState();
 
   if (saved <= FS_ARMED) {
-    if (verbose) Serial.println("[FLIGHT] Latch says pre-launch - state PAD");
+    if (verbose) {
+      Serial.println("[FLIGHT] Latch says pre-launch - state PAD");
+      announceAutoArm();
+    }
     latchWrite(FS_PAD, false, 0);
     return;
   }
@@ -202,8 +230,60 @@ bool armFlight() {
 void disarmFlight() {
   disarmPyro();
 
+  // A deliberate disarm has to STICK. Without this the
+  // auto-arm below walks the board straight back to ARMED
+  // PAD_STILL_TIME later, which makes X look broken and
+  // permanently blocks the bench test path - testFirePyro()
+  // refuses while armed, so T would never get a window.
+  //
+  // Only a power cycle clears it. That is the point: on the
+  // pad, "I disarmed this" must not quietly expire.
+  autoArmBlocked = true;
+
   if (flightState == FS_ARMED) {
     enterState(FS_PAD);
+  }
+}
+
+
+// =====================================================
+// AUTO ARM - FS_PAD only
+//
+// Calls the same armFlight() the A key does. Every gate
+// that function enforces is still enforced here; this
+// only supplies the keystroke nobody is at the pad to
+// press.
+//
+// The settled test is split because the stillness window
+// is an IMU measurement. With the IMU down stillSince is
+// re-stamped every tick and PAD_STILL_TIME can never be
+// met, so a baro-only vehicle would sit in PAD for the
+// whole flight. That vehicle is still flyable - FS_ARMED
+// carries a baro launch detector for exactly this case -
+// so fall back to a fixed settle measured from boot.
+//
+// Testing settled BEFORE calling armFlight() is what keeps
+// the log readable: the ordinary "not settled yet" refusal
+// would otherwise print 20 times a second for the entire
+// pad wait and bury everything else. The refusals that get
+// past it are the ones worth reading, and they are rate
+// limited to one per AUTO_ARM_RETRY.
+// =====================================================
+
+static void tryAutoArm() {
+  if (autoArmBlocked || pyroFired)                  return;
+  if (millis() - lastAutoArmTry < AUTO_ARM_RETRY)   return;
+
+  bool settled = imuOK
+               ? (gyroCalDone && millis() - stillSince >= PAD_STILL_TIME)
+               : (baroOK      && millis() - padSince   >= PAD_STILL_TIME);
+
+  if (!settled) return;
+
+  lastAutoArmTry = millis();
+
+  if (armFlight()) {
+    Serial.println("[FLIGHT] AUTO-ARMED - no key was pressed");
   }
 }
 
@@ -365,6 +445,13 @@ void serviceFlight() {
       if (baroOK && groundPrimed) {
         groundAlt = groundAlt * 0.99 + baroAltMSL * 0.01;
       }
+
+      // Last in the block: armFlight() re-zeros the ground
+      // reference off groundAlt, so let the drift track above
+      // land this tick's sample first.
+#if AUTO_ARM_ENABLED
+      tryAutoArm();
+#endif
       break;
     }
 
