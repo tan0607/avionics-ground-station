@@ -531,10 +531,34 @@ void serviceFlight() {
         launchSamples = 0;
       }
 
-      // Baro fallback, in case the IMU died on the pad
-      if (!launched && baroOK && altFiltered > LAUNCH_ALT && vertVel > 5.0) {
+      // Baro fallback, in case the IMU died on the pad.
+      //
+      // The IMU test is the point of this clause and it used to be
+      // missing: the comment said "in case the IMU died" but the
+      // condition never asked whether it had, so a live IMU sitting
+      // flat and insisting nothing had moved could not veto a launch
+      // called on a pressure step alone.
+      //
+      // That is not a theoretical hole on this range. The vehicle
+      // waits ARMED on the rail for hours while nine other rockets
+      // fly, and 15 m of LAUNCH_ALT is only ~1.8 hPa - inside what a
+      // gust across imperfect static ports, or a neighbouring motor,
+      // can produce. A launch called there is not a late deployment;
+      // APOGEE_TIMEOUT has no altitude gate, so the charge fires 19 s
+      // later, on the pad, with people on the range.
+      //
+      // So ask for corroboration. A real launch always carries
+      // acceleration, and BURNOUT_ACCEL is a low bar it clears by a
+      // wide margin, so nothing legitimate is refused. If the IMU is
+      // genuinely down the clause falls back to exactly what it did
+      // before, which is what it was written for.
+      bool imuAgrees = !imuOK || (accelMag > BURNOUT_ACCEL);
+
+      if (!launched && baroOK && imuAgrees &&
+          altFiltered > LAUNCH_ALT && vertVel > 5.0) {
         launched = true;
-        Serial.println("[FLIGHT] Launch detected by BARO (IMU unavailable)");
+        Serial.print("[FLIGHT] Launch detected by BARO (IMU ");
+        Serial.println(imuOK ? "agrees)" : "unavailable)");
       }
 
       if (launched) {
