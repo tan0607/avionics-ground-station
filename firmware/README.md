@@ -7,6 +7,36 @@ Two Arduino sketches, two boards, one radio link.
 | `MRCC_FlightComputer/` | ESP32-**S3** | `esp32:esp32:esp32s3` | fly the rocket: sensors, filters, flight state, pyro, SD log, and a 2 Hz MRCC downlink |
 | `MRCC_GroundStation/` | classic **ESP32** | `esp32:esp32:esp32` | receive that downlink and print it to USB for the backend |
 | `SD_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only SD card fault finder — no radio, no sensors. Flash it when the card won't mount, then drive it from the serial monitor |
+| `GS_Doctor/` | classic **ESP32** | `esp32:esp32:esp32` | bench-only LoRa link fault finder — the receiver's twin of `SD_Doctor`. Flash it to the ground-station board when packets stop arriving |
+
+### When the link is silent, flash `GS_Doctor`
+
+Almost every fault on this link looks identical from the operator's seat. Wrong
+frequency, wrong SF/BW/CR, wrong sync word, CRC off at one end, DIO0 in the wrong
+hole, or a rocket that simply isn't switched on — all of them give you **zero
+packets and no error message**. `MRCC_GroundStation` prints `RX ready` and then
+says nothing for the rest of the day.
+
+`GS_Doctor` exists to turn that one silence into distinguishable answers. It
+talks to the SX1278 through raw registers with no LoRa library, for the same
+reason `SD_Doctor` carries a bit-bang path: a diagnosis should not depend on the
+library you are trying to diagnose.
+
+| key | test | the question it answers |
+|---|---|---|
+| 1 | Radio present? | is the module wired — separately for the read path and the write path, because a dead MOSI passes a read test perfectly |
+| 2 | Link parameters | does the modem accept and hold every value in the contract, and what are they, so you can eyeball them against `Radio.cpp` |
+| 3 | Listen | **polled**, so it works with DIO0 unwired. Counts CRC failures separately: "RF arriving and mangled" is a different problem from "nothing arriving" |
+| 4 | DIO0 wiring | the fault test 3 deliberately cannot see. A perfect link with DIO0 in the wrong hole is exactly as silent as no antenna, and `MRCC_GroundStation` only ever prints from that interrupt |
+| 5 | Band scan | RSSI sweep of 433.0–434.8 MHz. A hump ~250 kHz wide is a transmitter — read its centre off the scale to find what a rocket is *actually* flashed to |
+| 6 | A/B check | 10 s on each channel. The fastest answer to "is this box on the wrong rocket" |
+| 7 | TX beacon | makes this box transmit, to test a second one without waiting for a rocket. Payload deliberately carries no `MRCC` substring so it can never be half-parsed into a flight record |
+| 8 | SPI pin scan | holds three pins and sweeps the fourth — built for one jumper in the wrong hole, which is what actually happens on a bench |
+| N | stored channel | what's in NVS, which is what the box will actually boot onto — not the `#define` |
+
+Tests 1 and 2 run automatically at boot. Tests 4, 5 and 6 need the rocket powered
+and transmitting.
+
 Plus `tools/` — host-side, never compiled into the flight build. See
 [Filter figures](#filter-figures-tools).
 
