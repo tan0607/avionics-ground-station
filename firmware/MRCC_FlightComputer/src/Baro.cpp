@@ -155,6 +155,13 @@ void readBaro() {
     Serial.print(" rejected in a row - the sensor means it. Re-seeding at ");
     Serial.print(alt, 0);
     Serial.println(" m");
+
+    // The step this is about to publish is exactly what the gate was
+    // built to keep out of the alpha-beta filter. Accepting it as a
+    // measurement would hand that filter thousands of m/s and then
+    // thousands negative on the sample after - which is APOGEE_VEL,
+    // several times over. Say so, and let Flight.cpp re-prime instead.
+    baroReseeded = true;
   }
 
   rejectRun    = 0;

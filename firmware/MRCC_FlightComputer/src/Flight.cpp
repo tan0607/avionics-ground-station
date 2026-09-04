@@ -449,6 +449,25 @@ static void updateAltitude(float dt) {
     filterPrimed = false;
   }
 
+  // The barometer gave up arguing with a reading it had been
+  // rejecting and re-seeded on it. That is a step, not a
+  // measurement: fed through the residual below it becomes
+  // thousands of m/s and then thousands negative on the next
+  // sample, which satisfies APOGEE_VEL many times over. Same
+  // treatment as a ground reference that has just moved -
+  // re-prime, do not integrate.
+  //
+  // The altitude is now wrong by whatever the sensor decided,
+  // and left that way on purpose. Apogee is called on velocity,
+  // which is a difference, so a constant offset still finds the
+  // top - and re-zeroing maxAlt here could withhold MIN_ALT_GAIN
+  // for the rest of a flight that has already passed its peak.
+  if (baroReseeded) {
+    baroReseeded = false;
+    filterPrimed = false;
+    Serial.println("[FLIGHT] Baro re-seeded - re-priming the altitude filter");
+  }
+
   altAGL = baroAltMSL - groundAlt;
 
   if (!filterPrimed) {

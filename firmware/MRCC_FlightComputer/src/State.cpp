@@ -59,6 +59,7 @@ unsigned long lastGpsDataTime = 0;
 float pressure   = 0.0;
 float baroTemp   = 0.0;
 float baroAltMSL = 0.0;
+bool  baroReseeded = false;
 
 unsigned long lastBaroUpdate = 0;
 
