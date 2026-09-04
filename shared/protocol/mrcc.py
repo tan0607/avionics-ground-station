@@ -22,10 +22,18 @@ is added by the GROUND receiver sketch, everything after the `|` came over the a
     LAT=0.000000,LON=0.000000,GALT=0.0,GSPEED=0.00,COURSE=0.0,AX=0.00,AY=0.00,
     AZ=9.81,VX=0.00,VY=0.00,VZ=0.00,ALT=0.0,HDG=103.5,P=101325,STATE=LANDED
 
+The build in `firmware/` today (Radio.cpp) sends short keys throughout, drops
+P/VX/VY for the byte budget, and adds the flight and health fields the line above
+had no room for:
+
+    len=185 RSSI=-53 SNR=10.2 | MRCC,PKT=207,T=207.5,ST=PAD,AL=0.4,VZ=0.0,MX=0.4,
+    AR=0,FI=0,GD=1,GF=1,SAT=8,LAT=4.098600,LON=100.950500,GA=45.0,GS=0.0,CRS=0,
+    AX=0.10,AY=0.20,AZ=9.79,GX=0,GY=0,GZ=0,HDG=103,SD=1,BA=1,IM=1
+
 An older revision of the same transmitter emitted a shorter set with a vehicle id
 and a battery reading (`MRCC,RKT01,PKT=16,...,BAT=4.15,TEMP=29.6,STATE=ASCENT`).
-Both parse here: every field is looked up by NAME, never by position, so adding or
-dropping a key on the transmitter cannot silently shift a column.
+All three parse here: every field is looked up by NAME, never by position, so
+adding or dropping a key on the transmitter cannot silently shift a column.
 
 WHAT THIS DELIBERATELY DOES NOT DO: it does not become a second source of truth.
 It maps MRCC onto `packet.Telemetry`, so everything downstream — loss tracking,
@@ -64,6 +72,13 @@ FIELD_ALIASES: dict[str, str] = {
     "GS": "GSPEED",
     "CRS": "COURSE",
     "ST": "STATE",
+    # `ALT` -> `AL` was the fourth rename, and the most expensive one yet: the
+    # key is consumed into `baro_alt_m`, so an unaliased `AL` did not merely
+    # land in `extra`, it left ALTITUDE READING 0 on a flying rocket while the
+    # number sat in plain sight in the raw stream. Exactly the failure the note
+    # above predicts, which is the argument for canonicalising here rather than
+    # teaching each consumer both spellings.
+    "AL": "ALT",
 }
 
 # --- what the transmitter calls each flight phase --------------------------
@@ -142,15 +157,25 @@ _CONSUMED = frozenset({
 # FIELD_ALIASES follows, for the same reason: this transmitter renames things.
 # Add a name here when it has earned a column of its own.
 #
-# Order mirrors the dashboard's Aux strip so the CSV reads like the screen.
+# Order mirrors the dashboard's Aux strip so the CSV reads like the screen --
+# but only loosely, and ADD AT THE END. These names order AUX_COLUMNS, so
+# inserting one in the middle shifts every column of every MRCC telemetry.csv
+# already on disk, and a reader going by position would silently mis-read them.
 #
 # Only keys that actually reach `extra` belong here. VZ and GALT are absent on
 # purpose: `_CONSUMED` already routes them to `vspeed_ms` and `gps_alt_m`, so a
 # column for either would be empty in every row of every flight.
+#
+# The last row is the vehicle's own health and pyro reporting -- SD/BA/IM and
+# AR/FI. Each is evidence for a bit the ground station derives (see
+# health_from_fields / flags_from_fields), and they are kept here for the same
+# reason GPSDATA is: the record should show what the vehicle SAID next to what
+# this code concluded from it, so a wrong conclusion is reviewable afterwards.
 AUX_FIELDS: tuple[str, ...] = (
     "P", "HDG", "COURSE", "GSPEED", "GPSDATA",
     "AX", "AY", "AZ", "VX", "VY",
     "GX", "GY", "GZ", "TEMP",
+    "MX", "AR", "FI", "SD", "BA", "IM",
 )
 
 # `aux_`-prefixed and lowercased so an aux field can never collide with a
@@ -343,10 +368,24 @@ def health_from_fields(frame: MrccFrame) -> tuple[int, int]:
     raises six alarms. So each bit is reported only when the frame contains
     evidence either way, and `health_known` marks which bits that is.
 
-      BARO  <- P (pressure). A barometer that is not answering cannot produce a
-               plausible pressure; 0 means no reading, not a vacuum.
-      IMU   <- AX/AY/AZ. All three at exactly 0.0 is a dead sensor — a real
-               accelerometer at rest still reads ~9.81 on one axis.
+    Two of these the vehicle now STATES outright (BA, IM) and the rest are still
+    read off the data. A stated bit always wins: it is the flight computer's own
+    `baroOK` / `imuOK`, and every inference below is a proxy for exactly that.
+
+      BARO  <- BA, the vehicle's own baroOK. Falls back to P (pressure): a
+               barometer that is not answering cannot produce a plausible
+               pressure, and 0 means no reading, not a vacuum.
+      IMU   <- IM, the vehicle's own imuOK. Falls back to AX/AY/AZ, all three at
+               exactly 0.0 being a dead sensor -- a real accelerometer at rest
+               still reads ~9.81 on one axis.
+
+               That fallback is WEAK and the IM bit is why it is now only a
+               fallback. Firmware before 2026-09-04 skipped the sensor read
+               entirely while the IMU was down, so ax/ay/az held their LAST GOOD
+               VALUES for the rest of the flight -- never zero, so this test
+               reported IMU OK straight through the failure. Only an IMU that
+               died before the first ever read downlinks true zeros. On a log
+               from that firmware the IMU row is a guess; read it as one.
       GPS   <- GPSDATA, which is the module talking, NOT GPSFIX, which is the
                module having a lock. No lock indoors is normal; no data is not.
       SD    <- SD, which the transmitter added after the 2026-08-19 revision:
@@ -357,22 +396,36 @@ def health_from_fields(frame: MrccFrame) -> tuple[int, int]:
                write success. Inferring the flag from the bit would invent the
                half of the story the vehicle did not tell us.
       PYRO / VBAT: nothing in the frame speaks to these. Left unknown.
+
+    LORA is absent by design, not by oversight. The transmitter only builds a
+    packet when its radio is up, so a downlinked "radio OK" could never read
+    anything but 1. Link health is the arrival of frames at all, which is
+    loss.py's job, not this function's.
     """
     health = 0
     known = 0
 
-    if "P" in frame.extra:
+    if "BA" in frame.extra:
+        known |= packet.HEALTH_BARO
+        if frame.extra["BA"] > 0:
+            health |= packet.HEALTH_BARO
+    elif "P" in frame.extra:
         known |= packet.HEALTH_BARO
         if frame.extra["P"] > 0:
             health |= packet.HEALTH_BARO
 
-    axes = [frame.extra[k] for k in ("AX", "AY", "AZ") if k in frame.extra]
-    if axes:
+    if "IM" in frame.extra:
         known |= packet.HEALTH_IMU
-        # Read the axes, not the derived tilt: an upright vehicle and a dead
-        # accelerometer both give tilt 0°, and only one of them is a fault.
-        if any(a != 0.0 for a in axes):
+        if frame.extra["IM"] > 0:
             health |= packet.HEALTH_IMU
+    else:
+        axes = [frame.extra[k] for k in ("AX", "AY", "AZ") if k in frame.extra]
+        if axes:
+            known |= packet.HEALTH_IMU
+            # Read the axes, not the derived tilt: an upright vehicle and a dead
+            # accelerometer both give tilt 0°, and only one of them is a fault.
+            if any(a != 0.0 for a in axes):
+                health |= packet.HEALTH_IMU
 
     if "GPSDATA" in frame.extra:
         known |= packet.HEALTH_GPS
@@ -390,6 +443,41 @@ def health_from_fields(frame: MrccFrame) -> tuple[int, int]:
             health |= packet.HEALTH_VBAT
 
     return health, known
+
+
+def flags_from_fields(frame: MrccFrame) -> tuple[int, int]:
+    """Infer (flags, flags_known) bitmasks from an MRCC frame — the flags twin
+    of `health_from_fields`, and reported the same way: a bit only when the frame
+    is evidence either way, with `flags_known` marking which.
+
+    This used to return nothing at all, and the comment explaining why said the
+    downlink "carries no flags". That stopped being true: the transmitter sends
+    AR and FI, and the ground station was dropping both into `extra` and then
+    rendering ARMED and PYRO as unknown — with a live `FI=1` sitting in the raw
+    stream. PYRO FIRED is the single event this console exists to show.
+
+      ARMED      <- AR, the vehicle's own pyroArmed.
+      PYRO_FIRED <- FI, the vehicle's own pyroFired. Latched in RTC memory on the
+                    vehicle, so it survives a brownout reset and stays 1.
+      CONTINUITY: not downlinked. The vehicle prints it on the console but there
+                  is no room for it in the packet, so it stays unknown here
+                  rather than reading as an open e-match.
+      SD_OK:      deliberately NOT taken from the SD field. That field is
+                  HEALTH_SD ("card mounted"); this flag is "writes are currently
+                  succeeding", and a mounted card whose writes fail is 1 + 0.
+                  See health_from_fields for the same distinction from the other
+                  side.
+    """
+    flags = 0
+    known = 0
+
+    for name, bit in (("AR", packet.FLAG_ARMED), ("FI", packet.FLAG_PYRO_FIRED)):
+        if name in frame.extra:
+            known |= bit
+            if frame.extra[name] > 0:
+                flags |= bit
+
+    return flags, known
 
 
 def aux_csv_row(frame: MrccFrame) -> dict[str, object]:

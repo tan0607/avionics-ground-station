@@ -69,15 +69,20 @@ def split_frame(item) -> tuple[packet.Telemetry, mrcc.MrccFrame | None, int | No
     The binary parser yields a bare Telemetry: no radio metrics (the frame body
     has no room for them), a full health byte and a full flags byte, so both
     "known" masks are None = "everything reported". The MRCC parser yields a
-    richer frame because the SX1278 does report RSSI/SNR per packet, because its
-    health has to be inferred a bit at a time, and because it carries no flags at
-    all — continuity, pyro, SD and armed are simply absent from that downlink.
+    richer frame because the SX1278 does report RSSI/SNR per packet, and because
+    both its health and its flags have to be read a bit at a time.
+
+    The flags mask used to be hardcoded to 0 on the grounds that MRCC "carries no
+    flags at all". It carries AR and FI, so ARMED and PYRO FIRED were being
+    thrown away and rendered as unknown while the vehicle was reporting them.
     """
     if isinstance(item, packet.Telemetry):
         return item, None, None, None
     health, known = mrcc.health_from_fields(item)
     item.telemetry.health = health
-    return item.telemetry, item, known, 0
+    flags, fknown = mrcc.flags_from_fields(item)
+    item.telemetry.flags = flags
+    return item.telemetry, item, known, fknown
 
 
 @dataclass

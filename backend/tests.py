@@ -7,6 +7,7 @@ the uint16 wrap, the exact wire-key contract, and raw.log record framing.
 from __future__ import annotations
 
 import json
+import re
 import struct
 import tempfile
 import time
@@ -378,12 +379,155 @@ def test_mrcc_sd_field_drives_the_sd_health_bit() -> None:
     assert not known & packet.HEALTH_SD
 
     # HEALTH_SD is "card mounted"; FLAG_SD_OK is "writes succeeding". The
-    # downlink speaks to the first only, so the flag must stay unknown -- MRCC
-    # reports no flags at all (backend.app.split_frame passes flags_known=0).
-    f = mrcc.decode_line("MRCC,PKT=1,T=1.0,AX=0.1,AY=0.0,AZ=9.8,SD=1")
+    # downlink speaks to the first only, so the flag must stay unknown even now
+    # that MRCC does report flags -- SD=1 says the card mounted, and says
+    # nothing whatever about whether writes are landing on it.
+    f = mrcc.decode_line("MRCC,PKT=1,T=1.0,AX=0.1,AY=0.0,AZ=9.8,SD=1,AR=1")
     assert f is not None
-    row = f.telemetry.to_csv_row("t", flags_known=0)
+    _, fknown = mrcc.flags_from_fields(f)
+    assert not fknown & packet.FLAG_SD_OK
+    row = f.telemetry.to_csv_row("t", flags_known=fknown)
     assert row["sd_ok"] == "", row["sd_ok"]
+
+
+# The exact line firmware/MRCC_FlightComputer/src/Radio.cpp builds today, with a
+# fix and a fired charge so every field carries a value worth asserting on.
+_CURRENT_BODY = (
+    "MRCC,PKT=207,T=207.5,ST=DESCENT,AL=120.5,VZ=-3.5,MX=284.0,AR=1,FI=1,"
+    "GD=1,GF=1,SAT=8,LAT=4.098600,LON=100.950500,GA=45.0,GS=1.2,CRS=110,"
+    "AX=0.10,AY=0.20,AZ=9.79,GX=1,GY=-2,GZ=0,HDG=103,SD=1,BA=1,IM=1"
+)
+
+
+def _current_frame(body: str = _CURRENT_BODY):
+    f = mrcc.decode_line(f"len={len(body)} RSSI=-53 SNR=10.2 | {body}")
+    assert f is not None, body
+    return f
+
+
+def test_mrcc_short_keys_do_not_cost_the_altitude() -> None:
+    """`ALT` -> `AL` was a transmitter rename that reached nothing on the ground.
+
+    Every unknown key still parses -- it just lands in `extra` and the field it
+    should have filled keeps its default -- so this rename did not raise an
+    error anywhere. It made a flying rocket read 0 m while the altitude sat in
+    plain sight in raw.log. `MX` was lost the same way, and AR/FI with it.
+    """
+    f = _current_frame()
+    t = f.telemetry
+
+    assert t.baro_alt_m == 120                      # AL, not ALT
+    assert abs(t.vspeed_ms - (-3.5)) < 1e-9
+    assert t.flight_state == FlightState.DROGUE     # ST, not STATE
+    assert t.gps_sats == 8 and t.gps_fix == GpsFix.FIX_3D
+    assert t.gps_alt_m == 45                        # GA, not GALT
+
+    # Canonicalised, so nothing downstream has to learn a second spelling.
+    assert "AL" not in f.extra and "ALT" not in f.extra
+    assert f.extra["MX"] == 284.0                   # apogee as the VEHICLE has it
+
+
+def test_mrcc_health_prefers_what_the_vehicle_states() -> None:
+    """BA/IM are the flight computer's own baroOK/imuOK. They beat every proxy.
+
+    The IMU proxy is the one that mattered: firmware before 2026-09-04 skipped
+    the sensor read while the IMU was down, so ax/ay/az held their LAST GOOD
+    values and "all three exactly zero" never came true. A dead IMU downlinked
+    9.79 forever and this console called it healthy.
+    """
+    health, known = mrcc.health_from_fields(_current_frame())
+    for mask in (packet.HEALTH_BARO, packet.HEALTH_IMU,
+                 packet.HEALTH_GPS, packet.HEALTH_SD):
+        assert known & mask and health & mask, mask
+
+    # The case the axis heuristic could not see: vehicle says IMU down, axes
+    # still reading a plausible 1 g because they are frozen, not zeroed.
+    frozen = _CURRENT_BODY.replace("IM=1", "IM=0")
+    health, known = mrcc.health_from_fields(_current_frame(frozen))
+    assert known & packet.HEALTH_IMU and not health & packet.HEALTH_IMU
+
+    # Same for the barometer: BA=0 with a stale altitude still in the packet.
+    health, known = mrcc.health_from_fields(_current_frame(_CURRENT_BODY.replace("BA=1", "BA=0")))
+    assert known & packet.HEALTH_BARO and not health & packet.HEALTH_BARO
+
+    # Older revisions carry neither bit, and the proxies must still work there.
+    older = "MRCC,PKT=1,T=1.0,GD=1,AX=0.0,AY=0.0,AZ=9.8,ALT=0.0,P=101325,ST=PAD"
+    health, known = mrcc.health_from_fields(_current_frame(older))
+    assert known & packet.HEALTH_BARO and health & packet.HEALTH_BARO   # P > 0
+    assert known & packet.HEALTH_IMU and health & packet.HEALTH_IMU     # AZ != 0
+
+    # ...and a genuinely dead-from-boot IMU on that older format still reads DOWN.
+    dead = "MRCC,PKT=1,T=1.0,GD=1,AX=0.0,AY=0.0,AZ=0.0,ALT=0.0,P=101325,ST=PAD"
+    health, known = mrcc.health_from_fields(_current_frame(dead))
+    assert known & packet.HEALTH_IMU and not health & packet.HEALTH_IMU
+
+    # No LORA bit, ever: a packet that arrived is its own proof of link.
+    assert not any(name == "LORA" for _, name, _ in packet.SUBSYSTEMS)
+
+
+def test_mrcc_reports_the_pyro_state_it_is_sent() -> None:
+    """AR/FI reached `extra` and stopped there, so ARMED and PYRO FIRED rendered
+    as unknown with the vehicle actively reporting both."""
+    flags, known = mrcc.flags_from_fields(_current_frame())
+    assert known & FLAG_ARMED and flags & FLAG_ARMED
+    assert known & packet.FLAG_PYRO_FIRED and flags & packet.FLAG_PYRO_FIRED
+
+    safe = _CURRENT_BODY.replace("AR=1,FI=1", "AR=0,FI=0")
+    flags, known = mrcc.flags_from_fields(_current_frame(safe))
+    assert known & FLAG_ARMED and not flags & FLAG_ARMED
+    assert known & packet.FLAG_PYRO_FIRED and not flags & packet.FLAG_PYRO_FIRED
+
+    # Not downlinked -> still unknown. A missing continuity field must not read
+    # as an open e-match, which is the alarm an operator scrubs a launch over.
+    assert not known & FLAG_CONTINUITY and not known & packet.FLAG_SD_OK
+
+    # An older frame carries neither, and must report neither.
+    _, known = mrcc.flags_from_fields(_current_frame("MRCC,PKT=1,T=1.0,AZ=9.8,ST=PAD"))
+    assert known == 0
+
+    # End to end: a fired charge has to survive onto the wire as a real boolean
+    # the safety panel will light up, not as a null.
+    f = _current_frame()
+    flags, fknown = mrcc.flags_from_fields(f)
+    f.telemetry.flags = flags
+    w = telemetry_to_wire(f.telemetry, host_time_ms=1_700_000_000_000, flags_known=fknown)
+    assert w["pyro_fired"] is True and w["armed"] is True
+    assert w["flags_known"] & packet.FLAG_PYRO_FIRED
+
+
+def test_every_field_the_firmware_sends_has_somewhere_to_land() -> None:
+    """The transmitter's format string, checked against this parser.
+
+    This is the test the last four renames needed and did not have. mrcc.py
+    cannot fail loudly on an unknown key -- looking fields up by name is exactly
+    what stops a rename shifting a column -- so a dropped field is silent, and
+    `AL` proved it can be silent for a whole flight. The firmware lives in this
+    repo, so the contract is checkable here rather than on the pad.
+
+    A key must be either CONSUMED into a Telemetry field or named in AUX_FIELDS
+    (which gives it a telemetry.csv column). Landing only in `aux_extra` is not
+    enough: that is the catch-all, and a field nobody named is a field nobody
+    plotted.
+    """
+    src = Path(__file__).resolve().parent.parent / "firmware/MRCC_FlightComputer/src/Radio.cpp"
+    assert src.is_file(), f"transmitter source moved: {src}"
+
+    text = src.read_text()
+    start = text.index("buildTelemetryPacket() {")
+    body = text[start:text.index("txPacketLen = strlen", start)]
+
+    # `AL=%.1f` -> AL. Only inside the format string, so the argument list and
+    # the comments above it cannot contribute false keys.
+    keys = {m for m in re.findall(r'([A-Z][A-Z0-9]*)=%', body)}
+    assert "PKT" in keys and "AL" in keys, keys      # the extraction itself works
+
+    known = set(mrcc._CONSUMED) | set(mrcc.AUX_FIELDS)
+    homeless = sorted(mrcc.FIELD_ALIASES.get(k, k) for k in keys) 
+    homeless = [k for k in homeless if k not in known]
+    assert not homeless, (
+        f"firmware sends {homeless} and mrcc.py has no home for them -- add an "
+        f"alias, consume it, or give it an AUX_FIELDS column"
+    )
 
 
 def _write_raw_log(dir_: Path, records: list[tuple[int, bytes]],
@@ -632,10 +776,13 @@ def test_mission_deriver_logs_state_pyro_and_link_edges() -> None:
 
 
 def test_mission_deriver_does_not_invent_a_pyro_it_cannot_see() -> None:
-    """MRCC carries no flags. A never-set bit is unknown, not 'has not fired'.
+    """A never-set bit is unknown, not 'has not fired'.
 
     Same rule the safety panel already follows: flags_known gates the reading,
-    so a downlink with no flags must not produce a PYRO event either way.
+    so a source reporting no flags must not produce a PYRO event either way.
+    MRCC does now report ARMED and PYRO_FIRED (see flags_from_fields), but it
+    still reports no continuity and no SD_OK, and the older revisions of the
+    downlink report nothing at all -- so the gate still has to hold.
     """
     md = MissionDeriver()
     t = _pad(1)

@@ -43,15 +43,24 @@ const KNOWN: Record<string, { label: string; unit: string; digits: number }> = {
   VX: { label: "Vx", unit: "m/s", digits: 2 },
   VY: { label: "Vy", unit: "m/s", digits: 2 },
   TEMP: { label: "Temp", unit: "°C", digits: 1 },
+  // Apogee so far, as the VEHICLE computed it. Not the same number as the max
+  // of baro_alt_m seen on the ground: a dropped packet never reaches this
+  // console, and the vehicle's own peak does.
+  MX: { label: "Max Alt", unit: "m", digits: 1 },
 }
 
 /**
  * Display order. GPSDATA is excluded on purpose: it is a health signal, already
  * consumed into the GPS peripheral row, and repeating it here as a bare 1 would
  * be a number with no meaning to the operator.
+ *
+ * SD/BA/IM and AR/FI are hidden for exactly that reason. They drive the
+ * subsystem-health panel and the safety readouts respectively, where they are
+ * rendered as state; a second copy here as a bare 0 or 1 is a number the
+ * operator has to decode, sitting next to the panel that already says it.
  */
-const ORDER = ["P", "HDG", "COURSE", "GSPEED", "AZ", "AX", "AY", "GX", "GY", "GZ", "VX", "VY", "TEMP"]
-const HIDDEN = new Set(["GPSDATA"])
+const ORDER = ["P", "MX", "HDG", "COURSE", "GSPEED", "AZ", "AX", "AY", "GX", "GY", "GZ", "VX", "VY", "TEMP"]
+const HIDDEN = new Set(["GPSDATA", "SD", "BA", "IM", "AR", "FI"])
 
 function orderedKeys(extra: Record<string, number>): string[] {
   const present = Object.keys(extra).filter((k) => !HIDDEN.has(k))
