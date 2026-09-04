@@ -50,6 +50,7 @@
 //   7 = I2C bus scan       (who is actually on the bus)
 //   8 = Sensors            (IMU rate + WHICH AXIS IS UP, baro)
 //   9 = GPS                (raw NMEA, with baud hunt)
+//   S = SPI pin scan       (one wrong wire, found)
 //   P = pins   R = last reset reason   M = menu
 //
 // PYRO IS NEVER TOUCHED. The gate pin is driven LOW at
@@ -168,7 +169,20 @@ long gFreq = WANT_FREQ_A;
 const long XTAL_HZ = 32000000L;
 
 SPIClass  &radioSPI = SPI;
+
+// 8 MHz is what Radio.cpp and the LoRa library use, so the doctor
+// starts there - a fault that only appears at the flight speed is a
+// fault worth reproducing. testPresence() drops it when that fails,
+// because a module that answers at 500 kHz and not at 8 MHz is not a
+// wiring fault, it is a signal-integrity one, and the fix is
+// different (shorter leads, a ground return next to the clock).
+long        gSpiHz = 8000000;
 SPISettings radioSettings(8000000, MSBFIRST, SPI_MODE0);
+
+static void setSpiHz(long hz) {
+  gSpiHz = hz;
+  radioSettings = SPISettings(hz, MSBFIRST, SPI_MODE0);
+}
 
 
 // =====================================================
@@ -225,6 +239,7 @@ void testListen();
 void i2cScan();
 void testSensors();
 void testGps();
+void spiPinScan();
 
 
 // =====================================================
@@ -249,6 +264,52 @@ static void regWrite(uint8_t addr, uint8_t value) {
   digitalWrite(PIN_SS, HIGH);
   radioSPI.endTransaction();
 }
+
+// =====================================================
+// BIT-BANGED REGISTER READ
+//
+// No SPI peripheral, no GPIO matrix routing, ~125 kHz.
+// SD_Doctor carries the same idea for the same reason: if
+// this works and the hardware SPI does not, the wiring is
+// fine and the fault is the peripheral, the pin mapping
+// or the clock rate. If NEITHER works, it is the wiring
+// and no amount of driver fiddling will help.
+// =====================================================
+
+static uint8_t bitBangRead(uint8_t addr) {
+  pinMode(PIN_SCK,  OUTPUT);
+  pinMode(PIN_MOSI, OUTPUT);
+  pinMode(PIN_MISO, INPUT);
+  pinMode(PIN_SS,   OUTPUT);
+
+  digitalWrite(PIN_SCK, LOW);          // SPI mode 0 idles low
+  digitalWrite(PIN_SS,  HIGH);
+  delayMicroseconds(5);
+  digitalWrite(PIN_SS,  LOW);
+  delayMicroseconds(5);
+
+  uint8_t a = addr & 0x7F;             // bit 7 clear = read
+  for (int i = 7; i >= 0; i--) {
+    digitalWrite(PIN_MOSI, (a >> i) & 1);   // MOSI changes while SCK low
+    delayMicroseconds(4);
+    digitalWrite(PIN_SCK, HIGH);            // slave samples on the rise
+    delayMicroseconds(4);
+    digitalWrite(PIN_SCK, LOW);
+  }
+
+  uint8_t v = 0;
+  for (int i = 7; i >= 0; i--) {
+    digitalWrite(PIN_SCK, HIGH);
+    delayMicroseconds(4);
+    v = (v << 1) | (digitalRead(PIN_MISO) & 1);   // master samples on the rise
+    digitalWrite(PIN_SCK, LOW);
+    delayMicroseconds(4);
+  }
+
+  digitalWrite(PIN_SS, HIGH);
+  return v;
+}
+
 
 static void hardReset() {
   pinMode(PIN_RST, OUTPUT);
@@ -432,6 +493,7 @@ void loop() {
     else if (c == '7') i2cScan();
     else if (c == '8') testSensors();
     else if (c == '9') testGps();
+    else if (c == 's' || c == 'S') spiPinScan();
     else if (c == 'p' || c == 'P') printPins();
     else if (c == 'r' || c == 'R') printResetReason();
     else if (c == 'm' || c == 'M') printMenu();
@@ -464,6 +526,7 @@ void printMenu() {
   Serial.println("  7 = I2C bus scan     who is actually on the bus");
   Serial.println("  8 = Sensors          IMU rate + WHICH AXIS IS UP, baro");
   Serial.println("  9 = GPS              raw NMEA, with baud hunt");
+  Serial.println("  S = SPI pin scan     one wrong wire, found");
   Serial.println("  P = pins   R = reset reason   M = this menu");
 }
 
@@ -520,29 +583,148 @@ void printResetReason() {
 // configure ever takes.
 // =====================================================
 
+// Names the chip behind a REG_VERSION byte. 0x12 is the
+// SX1276/77/78/79 family and the RFM95/96/98 modules built
+// on them; 0x22 is an SX1272, which is a DIFFERENT part on
+// a different band and will never hear a 433 MHz rocket.
+static const char *versionMeaning(uint8_t v) {
+  if (v == 0x12) return "SX1276/77/78/79 or RFM9x - correct family";
+  if (v == 0x22) return "SX1272 <<< WRONG PART. 868/915 MHz, not 433.";
+  return NULL;
+}
+
+// Before clocking anything, look at MISO as a plain wire.
+// A line that reads the same with SS high and SS low is not
+// being driven by anything, and no amount of SPI will make
+// it talk. This separates "nothing is connected" from "the
+// transfer is going wrong", which the version byte alone
+// cannot do.
+static void reportStaticLines() {
+  pinMode(PIN_MISO, INPUT);
+  pinMode(PIN_SS, OUTPUT);
+
+  digitalWrite(PIN_SS, HIGH);
+  delayMicroseconds(50);
+  int misoIdle = digitalRead(PIN_MISO);
+
+  digitalWrite(PIN_SS, LOW);
+  delayMicroseconds(50);
+  int misoSel = digitalRead(PIN_MISO);
+  digitalWrite(PIN_SS, HIGH);
+
+  Serial.printf("  MISO with SS high = %d, with SS low = %d\n", misoIdle, misoSel);
+
+  // An idle SX1278 releases MISO when deselected, so on a
+  // board with no bus pullup it floats and reads either
+  // way. This is a hint, not a verdict - which is why it
+  // prints alongside the version byte rather than instead
+  // of it.
+  if (misoIdle == misoSel) {
+    Serial.println("  (MISO did not respond to chip select - consistent with");
+    Serial.println("   a MISO or SS wire that is not reaching the module)");
+  }
+}
+
 void testPresence() {
   Serial.println("Resetting the module...");
+  setSpiHz(8000000);
   hardReset();
 
-  uint8_t v = regRead(REG_VERSION);
-  Serial.printf("  REG_VERSION (0x42) = 0x%02X   (expect 0x%02X)\n", v, SX1278_VERSION);
+  reportStaticLines();
 
-  if (v == 0x00) {
-    Serial.println("  FAIL - 0x00. MISO stuck low, or no power to the module.");
-    Serial.println("         Check 3V3 and GND first: an SX1278 on 5V is");
-    Serial.println("         usually a dead SX1278.");
-    return;
-  }
-  if (v == 0xFF) {
-    Serial.println("  FAIL - 0xFF. MISO floating: nothing drives the line.");
-    Serial.println("         Wrong MISO pin, broken wire, or SS never going");
-    Serial.println("         low (wrong SS pin).");
-    return;
-  }
+  uint8_t v = regRead(REG_VERSION);
+  Serial.printf("  REG_VERSION (0x42) = 0x%02X   (expect 0x%02X) @ %ld kHz\n",
+                v, SX1278_VERSION, gSpiHz / 1000);
+
+  const char *known = versionMeaning(v);
+  if (known) Serial.printf("  -> %s\n", known);
+
   if (v != SX1278_VERSION) {
-    Serial.println("  FAIL - something answers, but it is not an SX1278.");
+    // ---- is it the clock rate? ----
+    // Long jumper leads and a breadboard do not carry 8 MHz.
+    // The module is fine, the wiring is fine for the flight
+    // build's own purposes, and only this speed is wrong -
+    // a distinction worth two seconds of sweeping.
+    Serial.println();
+    Serial.println("  Retrying slower, in case this is signal integrity...");
+    const long speeds[] = { 4000000, 2000000, 1000000, 500000, 100000 };
+    uint8_t got = 0;
+    long worked = 0;
+
+    for (int i = 0; i < 5; i++) {
+      setSpiHz(speeds[i]);
+      hardReset();
+      got = regRead(REG_VERSION);
+      Serial.printf("    %4ld kHz -> 0x%02X\n", speeds[i] / 1000, got);
+      if (got == SX1278_VERSION) { worked = speeds[i]; break; }
+    }
+
+    if (worked) {
+      Serial.println();
+      Serial.printf("  *** ANSWERS AT %ld kHz, NOT AT 8 MHz. ***\n", worked / 1000);
+      Serial.println("  The module and the wiring are fine. The BUS is not");
+      Serial.println("  carrying 8 MHz - long jumpers, a breadboard, or no");
+      Serial.println("  ground return alongside the clock. Radio.cpp and the");
+      Serial.println("  LoRa library both run 8 MHz, so the flight build will");
+      Serial.println("  fail where this just succeeded. Shorten the leads.");
+      return;
+    }
+
+    // ---- is it the SPI peripheral? ----
+    Serial.println();
+    Serial.println("  Retrying with the SPI peripheral bypassed entirely");
+    Serial.println("  (bit-banged, ~125 kHz)...");
+    radioSPI.end();
+    hardReset();
+    uint8_t bb = bitBangRead(REG_VERSION);
+    Serial.printf("    bit-bang -> 0x%02X\n", bb);
+    radioSPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_SS);
+    setSpiHz(8000000);
+
+    if (bb == SX1278_VERSION) {
+      Serial.println();
+      Serial.println("  *** THE WIRING IS GOOD. The SPI peripheral is not. ***");
+      Serial.println("  Bit-banging the same pins reads the module correctly,");
+      Serial.println("  so every wire is where this sketch thinks it is.");
+      Serial.println("  Suspect a pin that cannot be routed, or another");
+      Serial.println("  driver holding the bus. This one is a software fault.");
+      return;
+    }
+
+    // ---- neither. It is the wiring or the part. ----
+    Serial.println();
+    if (v == 0x00 && bb == 0x00) {
+      Serial.println("  FAIL - 0x00 every way. MISO is held LOW by something,");
+      Serial.println("         or the module has no power AT THE CHIP.");
+      Serial.println("         A multimeter on the header pin proves the wire");
+      Serial.println("         has voltage, NOT that the regulator on the");
+      Serial.println("         module is passing it. Measure between the");
+      Serial.println("         module's own 3V3 and GND pads.");
+      Serial.println("         Then check GND is actually shared with the S3.");
+    }
+    else if (v == 0xFF && bb == 0xFF) {
+      Serial.println("  FAIL - 0xFF every way. MISO is floating: nothing is");
+      Serial.println("         driving it at all. In order of likelihood:");
+      Serial.printf("           - MISO is not on GPIO%d\n", PIN_MISO);
+      Serial.printf("           - SS is not on GPIO%d, so the module is never\n", PIN_SS);
+      Serial.println("             selected and never answers");
+      Serial.println("           - a broken or unseated jumper");
+      Serial.println("         Run the pin scan (S) - it finds one wrong hole.");
+    }
+    else {
+      Serial.printf("  FAIL - reads 0x%02X (bit-bang 0x%02X). Not a value any\n", v, bb);
+      Serial.println("         SX127x returns. Something is answering out of");
+      Serial.println("         step: SCK and MOSI swapped shifts every bit,");
+      Serial.println("         and a shared bus with a second chip selected");
+      Serial.println("         does the same. Run the pin scan (S).");
+    }
+    Serial.println();
+    Serial.println("  Whatever the cause, it is BEFORE the radio: nothing");
+    Serial.println("  else in this sketch can mean anything until this reads");
+    Serial.printf("  0x%02X.\n", SX1278_VERSION);
     return;
   }
+
   Serial.println("  PASS - read path works (SCK + MISO + SS).");
 
   setMode(MODE_SLEEP);
@@ -1395,4 +1577,122 @@ void testGps() {
   }
 
   Serial1.end();
+}
+
+
+// =====================================================
+// S - SPI PIN SCAN
+//
+// GS_Doctor's test 8, ported. Holds three pins at your
+// configured values and sweeps the fourth, four times
+// over, looking for REG_VERSION == 0x12.
+//
+// Narrow on purpose. The full permutation is four pins
+// from ~24 candidates - about 300,000 orderings - and it
+// answers a question you only have when the module is
+// missing entirely. The fault that actually happens on a
+// bench is ONE jumper in the wrong hole, and that is 4 x
+// 24 tries.
+//
+// THE PYRO GATE IS NEVER SWEPT. GPIO2 fires the charge,
+// and a scan that clocked SPI into it would be driving
+// the one pin this whole sketch refuses to touch. It is
+// excluded by pinIsFree() below, unconditionally.
+//
+// The other assigned pins - I2C, GPS, SD - are excluded
+// too, but only because a pin already doing another job
+// is not a candidate for this one. Disconnect the module
+// from them if you genuinely suspect a swap there.
+// =====================================================
+
+// ESP32-S3 GPIOs that are safe to drive. Same list SD_Doctor
+// uses. Excluded: 0/45/46 (strapping), 19/20 (native USB),
+// 26-32 (SPI flash), 33-37 (octal PSRAM), 43/44 (UART0 - the
+// serial monitor you are reading this on).
+static const int S3_SAFE_PINS[] = {
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21,
+  38, 39, 40, 41, 42, 47, 48
+};
+static const int S3_SAFE_COUNT = sizeof(S3_SAFE_PINS) / sizeof(S3_SAFE_PINS[0]);
+
+static bool pinIsFree(int p, int which) {
+  if (p == PIN_PYRO_GATE) return false;            // safety, non-negotiable
+  if (p == PIN_RST || p == PIN_DIO0) return false;
+  if (p == PIN_I2C_SDA || p == PIN_I2C_SCL) return false;
+  if (p == PIN_GPS_RX  || p == PIN_GPS_TX)  return false;
+  if (p == 7 || p == 14 || p == 15 || p == 16) return false;   // SD bus
+  if (which != 0 && p == PIN_SCK)  return false;
+  if (which != 1 && p == PIN_MISO) return false;
+  if (which != 2 && p == PIN_MOSI) return false;
+  if (which != 3 && p == PIN_SS)   return false;
+  return true;
+}
+
+static bool probeAt(int sck, int miso, int mosi, int ss) {
+  radioSPI.end();
+  pinMode(ss, OUTPUT);
+  digitalWrite(ss, HIGH);
+  radioSPI.begin(sck, miso, mosi, ss);
+
+  int saved = PIN_SS;
+  PIN_SS = ss;                     // regRead() drives PIN_SS
+  hardReset();
+  uint8_t v = regRead(REG_VERSION);
+  PIN_SS = saved;
+
+  return v == SX1278_VERSION;
+}
+
+static void sweepOne(const char *label, int which) {
+  int sck = PIN_SCK, miso = PIN_MISO, mosi = PIN_MOSI, ss = PIN_SS;
+  int have = which == 0 ? PIN_SCK : which == 1 ? PIN_MISO :
+             which == 2 ? PIN_MOSI : PIN_SS;
+
+  Serial.printf("  sweeping %-4s (you have %d) ...\n", label, have);
+
+  for (int i = 0; i < S3_SAFE_COUNT; i++) {
+    int p = S3_SAFE_PINS[i];
+    if (!pinIsFree(p, which)) continue;
+
+    if      (which == 0) sck  = p;
+    else if (which == 1) miso = p;
+    else if (which == 2) mosi = p;
+    else                 ss   = p;
+
+    if (probeAt(sck, miso, mosi, ss)) {
+      Serial.printf("    *** FOUND: %s = %d   (Config.h says %d)\n", label, p, have);
+    }
+  }
+}
+
+void spiPinScan() {
+  Serial.println();
+  Serial.println("Sweeping one pin at a time, the other three held at your");
+  Serial.println("configured values. Looking for REG_VERSION == 0x12.");
+  Serial.printf("GPIO%d (pyro gate) is never touched.\n", PIN_PYRO_GATE);
+  Serial.println();
+
+  setSpiHz(1000000);        // slow: this is a hunt, not a benchmark
+  sweepOne("SCK",  0);
+  sweepOne("MISO", 1);
+  sweepOne("MOSI", 2);
+  sweepOne("SS",   3);
+
+  // Put the bus back, or every later test runs on whatever
+  // the last probe happened to leave configured.
+  radioSPI.end();
+  pinMode(PIN_SS, OUTPUT);
+  digitalWrite(PIN_SS, HIGH);
+  radioSPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_SS);
+  setSpiHz(8000000);
+
+  Serial.println();
+  Serial.println("Nothing found means no SINGLE pin change makes the module");
+  Serial.println("answer. That leaves: no power at the chip, GND not shared,");
+  Serial.println("a dead module, or TWO wrong wires - none of which this");
+  Serial.println("scan can see. Measure 3V3 to GND on the module's own pads");
+  Serial.println("before going further.");
+  Serial.println();
+  Serial.println("RST and DIO0 are not scanned: RST is exercised by every");
+  Serial.println("probe here, and DIO0 has its own test (4).");
 }
