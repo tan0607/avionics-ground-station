@@ -20,5 +20,9 @@
 extern Adafruit_BMP280 bmp;
 extern uint8_t         baroAddress;
 
+// Samples the spike gate threw away. Non-zero means the I2C
+// link to this sensor is not clean - see Config.h.
+extern unsigned long   baroSpikeCount;
+
 bool initBaro(bool verbose);
 void readBaro();

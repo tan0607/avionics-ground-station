@@ -181,6 +181,50 @@ const unsigned long GPS_START_TIMEOUT = 5000;
 const unsigned long BARO_INTERVAL = 50;    // 20 Hz sampling
 const unsigned long BARO_STALE    = 1000;  // no reading this long = down
 
+// ---- spike gate ----
+//
+// readBaro() used to pass anything that was not zero or
+// NaN. A1R has been seen reading 4000 m, which is about
+// 616 hPa against a real 1010 - not drift and not noise,
+// but a corrupted transfer arriving as a perfectly valid
+// float. Two vehicles run this firmware and only one does
+// it, so the cause is in the wiring, not here; this is the
+// net under it either way.
+//
+// It has to be a net, because that reading is not a
+// cosmetic problem. Fed to the alpha-beta filter a 4000 m
+// step becomes thousands of m/s, and the sample that comes
+// back becomes thousands negative - which is APOGEE_VEL
+// satisfied many times over. In COAST past MIN_ALT_GAIN
+// that is the charge.
+//
+// MAX_JUMP is per BARO_INTERVAL, so 40 m at 20 Hz is
+// 800 m/s. Burnout on this vehicle is nearer 200 m/s, or
+// 10 m a sample, so real flight clears it with 4x to spare
+// and nothing physical gets rejected.
+const float   BARO_MAX_JUMP   = 40.0;   // m between samples
+
+// A sensor that keeps saying the same new thing is telling
+// the truth, or is broken in a way rejection cannot fix.
+// Either way, stop arguing and re-seed - 10 samples is
+// 500 ms, comfortably inside BARO_STALE, so the gate can
+// never be what marks the barometer down.
+//
+// It also matters that a consistently offset reading is
+// still USEFUL: apogee is called on velocity, which is a
+// difference, so an altitude that is wrong by a constant
+// still finds the top.
+const uint8_t BARO_REJECT_RUN = 10;
+
+// Coarse absolute net, for the first sample only - there
+// is nothing to compare it against, and a garbage seed
+// makes the jump gate reject every good reading after it
+// until the run expires. 300 hPa is ~9000 m, far above
+// anything this airframe will see, so real flight never
+// touches this.
+const float   BARO_MIN_HPA    = 300.0;
+const float   BARO_MAX_HPA    = 1100.0;
+
 
 // -----------------------------------------------------
 // PYRO - ejection channel
