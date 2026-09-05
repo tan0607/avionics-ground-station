@@ -45,6 +45,7 @@ const char* stateName(uint8_t s);
 
 void initFlight(bool verbose);
 void serviceFlight();
+void printArmReadiness(); // read-only PAD timer and last rejected sample
 
 bool armFlight();
 void disarmFlight();
