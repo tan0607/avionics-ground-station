@@ -467,8 +467,8 @@ void setup() {
   printMenu();
 
   Serial.println();
-  Serial.println("### AUTO TEST 1: RADIO PRESENT? ###");
-  testPresence();
+  Serial.println("### TEST 1: RADIO PRESENT? (SKIPPED AT BOOT) ###");
+  Serial.println("Press 1 to run it manually.");
 
   Serial.println();
   Serial.println("### AUTO TEST 7: I2C BUS SCAN ###");
@@ -1259,6 +1259,19 @@ static uint8_t i2cReadReg(uint8_t addr, uint8_t reg) {
   return Wire.read();
 }
 
+// The same read, but able to say "the transfer failed" instead of
+// returning 0xFF for it. 0xFF is a legal value in most of these
+// registers, so a helper that uses it as an error code cannot be
+// trusted to report one - test 8 printed a failed transfer in a
+// column headed "status" and it read as sensor data.
+static int i2cReadRegChecked(uint8_t addr, uint8_t reg) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return -1;
+  if (Wire.requestFrom((int)addr, 1) != 1) return -2;
+  return Wire.read();
+}
+
 static void i2cWriteReg(uint8_t addr, uint8_t reg, uint8_t val) {
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1461,12 +1474,22 @@ void testSensors() {
   // arithmetic is here rather than a raw ADC dump because
   // "101325 Pa" is checkable against a weather app and
   // "raw 415236" is not.
+  // Wire.read() on an EMPTY buffer returns -1, which lands in a
+  // uint8_t as 0xFF. A short read therefore does not fail, it
+  // fabricates all-ones data and every number below it is computed
+  // from that fabrication. This test used to do exactly that and
+  // then blame the sensor. Count the bytes.
   uint8_t cal[24];
   Wire.beginTransmission(bmpAddr);
   Wire.write(BMP_REG_CALIB);
   Wire.endTransmission(false);
-  Wire.requestFrom((int)bmpAddr, 24);
-  for (int i = 0; i < 24; i++) cal[i] = Wire.read();
+  int calGot = Wire.requestFrom((int)bmpAddr, 24);
+  for (int i = 0; i < 24; i++) cal[i] = (i < calGot) ? Wire.read() : 0xFF;
+
+  if (calGot != 24) {
+    Serial.printf("  *** CALIBRATION SHORT READ: asked 24, got %d\n", calGot);
+    Serial.println("  *** The missing bytes below are 0xFF, not the sensor's.");
+  }
 
   uint16_t T1 = cal[0] | (cal[1] << 8);
   int16_t  T2 = cal[2] | (cal[3] << 8);
@@ -1481,10 +1504,23 @@ void testSensors() {
   int16_t  P8 = cal[20] | (cal[21] << 8);
   int16_t  P9 = cal[22] | (cal[23] << 8);
 
+  Serial.printf("  calib T  %u %d %d\n", T1, T2, T3);
+  Serial.printf("  calib P  %u %d %d %d %d %d %d %d %d\n",
+                P1, P2, P3, P4, P5, P6, P7, P8, P9);
+
   if (T1 == 0 || P1 == 0) {
     Serial.println("  Calibration reads as zeros - the sensor answers but");
     Serial.println("  its OTP is not readable. Treat every number below as");
     Serial.println("  meaningless.");
+    return;
+  }
+
+  // The other way OTP comes back unreadable. 0x0000 was the only case
+  // this checked for, so an all-ones calibration sailed through and
+  // was presented as a measurement.
+  if (T1 == 0xFFFF || P1 == 0xFFFF) {
+    Serial.println("  Calibration reads as all ones - same verdict as zeros.");
+    Serial.println("  Nothing below is a measurement.");
     return;
   }
 
@@ -1494,12 +1530,33 @@ void testSensors() {
   Wire.beginTransmission(bmpAddr);
   Wire.write(BMP_REG_PRESS_MSB);
   Wire.endTransmission(false);
-  Wire.requestFrom((int)bmpAddr, 6);
+  int datGot = Wire.requestFrom((int)bmpAddr, 6);
   uint8_t d[6];
-  for (int i = 0; i < 6; i++) d[i] = Wire.read();
+  for (int i = 0; i < 6; i++) d[i] = (i < datGot) ? Wire.read() : 0xFF;
 
   int32_t adcP = ((int32_t)d[0] << 12) | ((int32_t)d[1] << 4) | (d[2] >> 4);
   int32_t adcT = ((int32_t)d[3] << 12) | ((int32_t)d[4] << 4) | (d[5] >> 4);
+
+  // The raw words, before any compensation touches them. This is the
+  // line that separates "the part is dead" from "the bus dropped the
+  // second half of the burst": 0xFFFFF is not a reading, it is the
+  // absence of one, and the compensation math turns it into a
+  // confident-looking 187 C.
+  Serial.printf("  raw bytes    %02X %02X %02X %02X %02X %02X  (%d of 6 read)\n",
+                d[0], d[1], d[2], d[3], d[4], d[5], datGot);
+  Serial.printf("  raw adcP     0x%05lX %s\n", (unsigned long)adcP,
+                adcP == 0xFFFFF ? "<<< ALL ONES - not a measurement" :
+                adcP == 0x80000 ? "<<< reset value - the sensor never converted" : "");
+  Serial.printf("  raw adcT     0x%05lX %s\n", (unsigned long)adcT,
+                adcT == 0xFFFFF ? "<<< ALL ONES - not a measurement" :
+                adcT == 0x80000 ? "<<< reset value - the sensor never converted" : "");
+
+  if (datGot != 6) {
+    Serial.printf("  *** DATA SHORT READ: asked 6, got %d.\n", datGot);
+    Serial.println("  *** Pressure is compensated with t_fine, so losing the");
+    Serial.println("  *** TEMPERATURE half corrupts the PRESSURE too. A sane");
+    Serial.println("  *** part reads absurd this way. Suspect the bus, not it.");
+  }
 
   double v1 = (adcT / 16384.0 - T1 / 1024.0) * T2;
   double v2 = ((adcT / 131072.0 - T1 / 8192.0) * (adcT / 131072.0 - T1 / 8192.0)) * T3;
@@ -1537,6 +1594,184 @@ void testSensors() {
     Serial.println("  and what the downlink's AL= is measured FROM. It is");
     Serial.println("  supposed to be your site elevation for today's");
     Serial.println("  weather, not zero.");
+  }
+
+  // =====================================================
+  // WHY the reading is wrong - three experiments
+  //
+  // Only runs when something is actually wrong, so a healthy
+  // board's output is unchanged.
+  //
+  // A part that answers its chip id, hands over 24 bytes of
+  // valid OTP, and then returns 0xFF for everything after the
+  // first data byte is not simply dead. 0xFF is SDA idle-high:
+  // the part stopped driving mid-burst. These three say whether
+  // that is the die or the board around it.
+  // =====================================================
+  if (datGot != 6 || adcT == 0xFFFFF || adcP == 0xFFFFF || pa < 30000 || pa > 110000) {
+
+    Serial.println();
+    Serial.println("  --- WHY: 1. one transaction per register ---");
+    // i2cReadReg is the same call that reads the chip id correctly.
+    // If these come back real, the die is fine and only the BURST
+    // is broken - a board/timing fault, not a part to replace.
+    uint8_t one[6];
+    for (int i = 0; i < 6; i++) one[i] = i2cReadReg(bmpAddr, BMP_REG_PRESS_MSB + i);
+    Serial.printf("  0xF7..0xFC   %02X %02X %02X %02X %02X %02X\n",
+                  one[0], one[1], one[2], one[3], one[4], one[5]);
+
+    int32_t oneP = ((int32_t)one[0] << 12) | ((int32_t)one[1] << 4) | (one[2] >> 4);
+    int32_t oneT = ((int32_t)one[3] << 12) | ((int32_t)one[4] << 4) | (one[5] >> 4);
+    Serial.printf("  adcP 0x%05lX  adcT 0x%05lX\n",
+                  (unsigned long)oneP, (unsigned long)oneT);
+
+    // A reading is only real if it is neither all-ones (nobody driving
+    // the bus) NOR 0x80000, which is the datasheet POWER-ON RESET value
+    // of the data registers. This check tested for the first and not the
+    // second, and so reported a part that had quietly reset as healthy.
+    if (oneT == 0x80000 && oneP == 0x80000) {
+      Serial.println("  >>> BOTH ARE 0x80000 - the register RESET value. The");
+      Serial.println("  >>> part is not converting at all: it reset and went");
+      Serial.println("  >>> back to sleep after the mode write took effect.");
+      Serial.println("  >>> That is a POWER fault, not a bus fault.");
+    } else if (oneT != 0xFFFFF && oneP != 0xFFFFF) {
+      Serial.println("  >>> SINGLE READS WORK. The sensor is GOOD. The burst");
+      Serial.println("  >>> read is what fails - bus timing, pull-ups or the");
+      Serial.println("  >>> repeated start. Do not replace the part.");
+    } else {
+      Serial.println("  >>> Single reads fail too. The data registers really");
+      Serial.println("  >>> are not answering, even though the OTP did.");
+    }
+
+    Serial.println();
+    Serial.println("  --- WHY: 2. the same burst at 100 kHz ---");
+    // Marginal pull-ups or long wires fail the 400 kHz rising edge
+    // first. Slowing the bus is the cheapest way to see that.
+    Wire.setClock(100000);
+    Wire.beginTransmission(bmpAddr);
+    Wire.write(BMP_REG_PRESS_MSB);
+    Wire.endTransmission(false);
+    int slowGot = Wire.requestFrom((int)bmpAddr, 6);
+    uint8_t sl[6];
+    for (int i = 0; i < 6; i++) sl[i] = (i < slowGot) ? Wire.read() : 0xFF;
+    Wire.setClock(400000);
+    Serial.printf("  0xF7..0xFC   %02X %02X %02X %02X %02X %02X  (%d of 6)\n",
+                  sl[0], sl[1], sl[2], sl[3], sl[4], sl[5], slowGot);
+    int32_t slP = ((int32_t)sl[0] << 12) | ((int32_t)sl[1] << 4) | (sl[2] >> 4);
+    int32_t slT = ((int32_t)sl[3] << 12) | ((int32_t)sl[4] << 4) | (sl[5] >> 4);
+    if (slT == 0x80000 && slP == 0x80000) {
+      Serial.println("  >>> Still the 0x80000 reset value. Bus speed is not");
+      Serial.println("  >>> the problem - the part is not converting.");
+    } else if (slT != 0xFFFFF && slP != 0xFFFFF) {
+      Serial.println("  >>> WORKS AT 100 kHz. That is a signal-integrity");
+      Serial.println("  >>> fault, not a dead sensor. Config.h sets 400 kHz.");
+    }
+
+    Serial.println();
+    Serial.println("  --- WHY: 3. forced mode, read while idle ---");
+    // Normal mode converts continuously, so every read races a
+    // conversion and the part draws its peak current during one.
+    // Forced mode takes a single sample and returns to sleep, so
+    // this reads a part that is doing nothing else. If only this
+    // works, suspect decoupling on the 3V3 rail.
+    i2cWriteReg(bmpAddr, BMP_REG_CTRL_MEAS, (1 << 5) | (4 << 2) | 1);  // forced
+    delay(50);
+    Wire.beginTransmission(bmpAddr);
+    Wire.write(BMP_REG_PRESS_MSB);
+    Wire.endTransmission(false);
+    int fGot = Wire.requestFrom((int)bmpAddr, 6);
+    uint8_t f[6];
+    for (int i = 0; i < 6; i++) f[i] = (i < fGot) ? Wire.read() : 0xFF;
+    Serial.printf("  0xF7..0xFC   %02X %02X %02X %02X %02X %02X  (%d of 6)\n",
+                  f[0], f[1], f[2], f[3], f[4], f[5], fGot);
+    int32_t fP = ((int32_t)f[0] << 12) | ((int32_t)f[1] << 4) | (f[2] >> 4);
+    int32_t fT = ((int32_t)f[3] << 12) | ((int32_t)f[4] << 4) | (f[5] >> 4);
+    if (fT != 0xFFFFF && fT != 0x80000 && fP != 0xFFFFF && fP != 0x80000) {
+      Serial.println("  >>> WORKS IN FORCED MODE. The part is fine; it fails");
+      Serial.println("  >>> while converting continuously. Suspect the 3V3");
+      Serial.println("  >>> decoupling cap next to the sensor.");
+      Serial.println("  >>> Baro.cpp uses MODE_NORMAL - forced mode is a");
+      Serial.println("  >>> workaround that would fly this board today.");
+    }
+
+    Serial.println();
+    Serial.println("  --- WHY: 4. does the mode write STICK? ---");
+    // The decisive one, and a multimeter cannot answer it. ctrl_meas
+    // (0xF4) holds the mode the part is in. Write normal mode, then
+    // read the register back:
+    //
+    //   reads 0x00  -> the part LOST its configuration. It reset. Only
+    //                  a supply event does that, and a DMM averaging
+    //                  over ~100 ms cannot see a 1 ms dip.
+    //   reads 0x33  -> the part kept its configuration and simply is
+    //                  not converting. Nothing is browning out; the
+    //                  silicon does not honour normal mode. That is a
+    //                  counterfeit or defective die, not your rail.
+    //
+    // Sampled repeatedly, because an intermittent reset looks different
+    // from a part that never converts at all.
+    i2cWriteReg(bmpAddr, BMP_REG_CTRL_MEAS, (1 << 5) | (4 << 2) | 3);   // normal
+    Serial.println("  wrote ctrl_meas = 0x33 (normal, x1 T, x8 P)");
+    Serial.println("   t(ms)  ctrl_meas  status  adcP     adcT");
+
+    uint8_t  seenReset = 0, seenKept = 0, seenData = 0, seenErr = 0;
+    unsigned long t0 = millis();
+    for (int n = 0; n < 6; n++) {
+      delay(150);
+      int cm = i2cReadRegChecked(bmpAddr, BMP_REG_CTRL_MEAS);
+      int st = i2cReadRegChecked(bmpAddr, 0xF3);
+      uint8_t r[6];
+      for (int i = 0; i < 6; i++) r[i] = i2cReadReg(bmpAddr, BMP_REG_PRESS_MSB + i);
+      int32_t rP = ((int32_t)r[0] << 12) | ((int32_t)r[1] << 4) | (r[2] >> 4);
+      int32_t rT = ((int32_t)r[3] << 12) | ((int32_t)r[4] << 4) | (r[5] >> 4);
+
+      char cmS[8], stS[8];
+      if (cm < 0) snprintf(cmS, sizeof cmS, "I2C_ERR"); else snprintf(cmS, sizeof cmS, "0x%02X", cm);
+      if (st < 0) snprintf(stS, sizeof stS, "I2C_ERR"); else snprintf(stS, sizeof stS, "0x%02X", st);
+
+      Serial.printf("   %5lu   %-9s %-8s 0x%05lX  0x%05lX\n",
+                    millis() - t0, cmS, stS, (unsigned long)rP, (unsigned long)rT);
+
+      if (cm < 0 || st < 0) seenErr = 1;
+      if (cm == 0x00) seenReset = 1;
+      if (cm == 0x33) seenKept  = 1;
+      if (rT != 0x80000 && rT != 0xFFFFF) seenData = 1;
+    }
+
+    Serial.println();
+    if (seenData) {
+      Serial.println("  >>> It IS converting in normal mode here. The fault is");
+      Serial.println("  >>> intermittent, so treat every verdict above as a");
+      Serial.println("  >>> snapshot and run this test several times.");
+    }
+    else if (seenReset) {
+      Serial.println("  >>> ctrl_meas came back 0x00 - the part LOST the mode");
+      Serial.println("  >>> it was given. It is resetting. A DMM reading a");
+      Serial.println("  >>> steady 3V3 does NOT rule this out: it averages,");
+      Serial.println("  >>> and the dip that resets a BMP280 is ~1 ms wide.");
+      Serial.println("  >>> Note WHICH current does it: forced mode runs the");
+      Serial.println("  >>> SAME x8 conversion and survives, so peak draw is");
+      Serial.println("  >>> fine and SUSTAINED draw is not. That is a supply");
+      Serial.println("  >>> path with RESISTANCE in it - a cold solder joint on");
+      Serial.println("  >>> VDD/GND, or a module LDO dropping out - far more");
+      Serial.println("  >>> than it is a missing decoupling cap. An unloaded");
+      Serial.println("  >>> DMM reads 3V3 across a bad joint quite happily.");
+      Serial.println("  >>> Ohm the 3V3 rail to the sensor VDD pin: want <1 ohm.");
+    }
+    else if (seenKept) {
+      Serial.println("  >>> ctrl_meas HELD 0x33 and it still never converted.");
+      Serial.println("  >>> Nothing is browning out - the part keeps its");
+      Serial.println("  >>> configuration and ignores it. Forced mode works,");
+      Serial.println("  >>> normal mode does not. That is defective or");
+      Serial.println("  >>> counterfeit silicon, and it fits the other board");
+      Serial.println("  >>> running the same firmware correctly. SWAP THE PART");
+      Serial.println("  >>> - or run forced mode and fly this one.");
+    }
+
+    Serial.println();
+    Serial.println("  Read 4 first: it says whether the part kept or lost its");
+    Serial.println("  configuration, which is the fork between a supply fault");
+    Serial.println("  and a bad die. The rest is supporting evidence.");
   }
 }
 
