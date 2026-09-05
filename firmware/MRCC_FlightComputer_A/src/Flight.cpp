@@ -29,6 +29,9 @@ static unsigned long landRefTime    = 0;
 static unsigned long padSince       = 0;
 static unsigned long lastAutoArmTry = 0;
 static unsigned long lastStuckReport = 0;
+static unsigned long lastLaunchImuUpdate = 0;
+static unsigned long lastAltitudeBaroUpdate = 0;
+static bool altitudeSampleSeen = false;
 
 static float   landRef        = 0.0;
 static uint8_t launchSamples  = 0;
@@ -39,7 +42,7 @@ static bool    autoArmBlocked = false;
 
 
 static void enterState(uint8_t s);
-static void updateAltitude(float dt);
+static bool updateAltitude();
 static void updateMagnitudes();
 static void announceAutoArm();
 static void reportAutoArmStuck();
@@ -216,6 +219,7 @@ bool armFlight() {
   maxAlt      = 0.0;
 
   launchSamples = 0;
+  lastLaunchImuUpdate = lastImuUpdate; // pad sample is already consumed
   apogeeSamples = 0;
   filterPrimed  = true;
 
@@ -394,8 +398,27 @@ static void updateMagnitudes() {
 // without needing orientation, which we do not have.
 // =====================================================
 
-static void updateAltitude(float dt) {
-  if (!baroOK || dt <= 0.0) return;
+static bool updateAltitude() {
+  const unsigned long sampleTime = lastBaroUpdate;
+  if (!baroOK || pressure <= 0.0 || millis() - sampleTime > BARO_STALE) {
+    // Missing/expired data cannot supply descent evidence. Re-prime when
+    // readings recover rather than extrapolate velocity across the outage.
+    filterPrimed = false;
+    apogeeSamples = 0;
+    return false;
+  }
+  if (altitudeSampleSeen && sampleTime == lastAltitudeBaroUpdate) return false;
+
+  const unsigned long sampleDt = sampleTime - lastAltitudeBaroUpdate;
+  if (!altitudeSampleSeen || sampleDt > BARO_STALE) {
+    // Also catches an outage hidden by a loop stall followed by a new sample.
+    filterPrimed = false;
+    apogeeSamples = 0;
+  }
+  altitudeSampleSeen = true;
+  lastAltitudeBaroUpdate = sampleTime;
+  const float dt = sampleDt / 1000.0f;
+
 
   // A barometer reads ALTITUDE ABOVE SEA LEVEL for a fixed
   // SEA_LEVEL_HPA, so on the pad it reports the pad's elevation for
@@ -465,6 +488,7 @@ static void updateAltitude(float dt) {
   if (baroReseeded) {
     baroReseeded = false;
     filterPrimed = false;
+    apogeeSamples = 0;
     Serial.println("[FLIGHT] Baro re-seeded - re-priming the altitude filter");
   }
 
@@ -474,7 +498,7 @@ static void updateAltitude(float dt) {
     altFiltered  = altAGL;
     vertVel      = 0.0;
     filterPrimed = true;
-    return;
+    return true;
   }
 
   float predAlt = altFiltered + vertVel * dt;
@@ -484,6 +508,7 @@ static void updateAltitude(float dt) {
   vertVel     = vertVel + (FILTER_BETA / dt) * resid;
 
   if (altFiltered > maxAlt) maxAlt = altFiltered;
+  return true;
 }
 
 
@@ -494,13 +519,10 @@ static void updateAltitude(float dt) {
 void serviceFlight() {
   if (millis() - lastFlightTick < FLIGHT_INTERVAL) return;
 
-  float dt = (millis() - lastFlightTick) / 1000.0;
   lastFlightTick = millis();
 
-  if (dt > 0.5) dt = FLIGHT_INTERVAL / 1000.0;   // first tick, or a stall
-
   updateMagnitudes();
-  updateAltitude(dt);
+  const bool newAltitude = updateAltitude();
 
   switch (flightState) {
 
@@ -523,7 +545,7 @@ void serviceFlight() {
       // zero would take ~15 s, and anyone who armed inside that
       // window would get a ground reference hundreds of metres out,
       // which feeds straight into the MIN_ALT_GAIN fire gate.
-      if (baroOK && groundPrimed) {
+      if (newAltitude && groundPrimed) {
         groundAlt = groundAlt * 0.99 + baroAltMSL * 0.01;
       }
 
@@ -542,13 +564,32 @@ void serviceFlight() {
     case FS_ARMED: {
       bool launched = false;
 
-      if (imuOK && accelMag > LAUNCH_ACCEL) {
-        launchSamples++;
-        if (launchSamples >= LAUNCH_CONFIRM) launched = true;
-      }
-      else {
+      // The loop may run many times without readIMU() receiving a sample.
+      // Count each timestamp at most once, still at the 50 ms flight cadence.
+      const unsigned long imuSampleTime = lastImuUpdate;
+      const bool imuUsable = imuOK &&
+                            (millis() - imuSampleTime <= IMU_STALE);
+      const bool newLaunchImu = imuUsable &&
+                               (imuSampleTime != lastLaunchImuUpdate);
+
+      // Also break the run if a fresh sample arrives after a long loop stall:
+      // its own age is small, but the earlier confirmations have expired.
+      if (!imuUsable || millis() - lastLaunchImuUpdate > IMU_STALE) {
         launchSamples = 0;
       }
+
+      if (newLaunchImu) {
+        if (accelMag > LAUNCH_ACCEL) {
+          launchSamples++;
+          if (launchSamples >= LAUNCH_CONFIRM) launched = true;
+        }
+        else {
+          launchSamples = 0;
+        }
+      }
+      // Missing but not stale: hold the count. Invalid data is consumed too,
+      // so changing a health flag alone cannot turn it into new evidence.
+      lastLaunchImuUpdate = imuSampleTime;
 
       // Baro fallback, in case the IMU died on the pad.
       //
@@ -571,9 +612,10 @@ void serviceFlight() {
       // wide margin, so nothing legitimate is refused. If the IMU is
       // genuinely down the clause falls back to exactly what it did
       // before, which is what it was written for.
-      bool imuAgrees = !imuOK || (accelMag > BURNOUT_ACCEL);
+      bool imuAgrees = !imuOK ||
+                       (newLaunchImu && accelMag > BURNOUT_ACCEL);
 
-      if (!launched && baroOK && imuAgrees &&
+      if (!launched && newAltitude && imuAgrees &&
           altFiltered > LAUNCH_ALT && vertVel > 5.0) {
         launched = true;
         Serial.print("[FLIGHT] Launch detected by BARO (IMU ");
@@ -617,10 +659,14 @@ void serviceFlight() {
       bool timeOK = (millis() - launchTime) >= MIN_COAST_TIME;
       bool altOK  = baroOK && (maxAlt >= MIN_ALT_GAIN);
 
-      if (baroOK && vertVel < APOGEE_VEL) apogeeSamples++;
-      else                                apogeeSamples = 0;
+      // Each accepted sample counts once. Ordinary gaps hold the run;
+      // expiry, sensor failure and re-seeding clear it in updateAltitude().
+      if (newAltitude) {
+        if (vertVel < APOGEE_VEL) apogeeSamples++;
+        else                     apogeeSamples = 0;
+      }
 
-      bool falling = (apogeeSamples >= APOGEE_CONFIRM);
+      bool falling = newAltitude && (apogeeSamples >= APOGEE_CONFIRM);
 
       if (timeOK && altOK && falling) {
         enterState(FS_APOGEE);

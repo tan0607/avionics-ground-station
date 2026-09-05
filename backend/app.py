@@ -143,10 +143,7 @@ class ConnectionManager:
 #   RX ready - vehicle B @ 434.100 MHz  (restored from last switch; ...)
 #   ### GS CHANNEL=B FREQ=434.100MHz PREV_PKTS=1834 ###
 #   ### GS STATUS channel=A freq=433.300MHz pkts=57 last_rssi=-53 ...
-_GS_CHANNEL_RE = re.compile(
-    r"(?:RX ready - vehicle\s+|### GS CHANNEL=|### GS STATUS channel=)([A-Z])\b",
-    re.IGNORECASE,
-)
+_GS_CHANNEL_RE = mrcc.GS_CHANNEL_RE
 
 
 class ChannelWatcher:

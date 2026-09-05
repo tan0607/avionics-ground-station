@@ -54,6 +54,16 @@ from typing import Iterator
 
 from . import packet
 
+# The receiver announces the selected vehicle on boot, switch and status.
+# Keep channel tracking and mounting selection on the same marker contract.
+GS_CHANNEL_RE = re.compile(
+    r"(?:RX ready - vehicle\s+|### GS CHANNEL=|### GS STATUS channel=)([A-Z])\b",
+    re.IGNORECASE,
+)
+# Confirmed installed orientation on 2026-09-05: vehicle B's +Y points to nose.
+# A and streams without channel context retain the previous +Z convention.
+NOSE_AXIS_BY_CHANNEL = {"B": "y"}
+
 # --- field-name aliases ----------------------------------------------------
 # The transmitter has now shipped THREE spellings of the same telemetry
 # (`GPSFIX` -> `GF`, `STATE` -> `ST`, and an older revision with a vehicle id and
@@ -266,14 +276,13 @@ def _clamp(value: float, lo: int, hi: int) -> int:
     return max(lo, min(hi, int(round(value))))
 
 
-def tilt_from_accel(ax: float, ay: float, az: float) -> int | None:
-    """Angle between the measured acceleration vector and vertical, degrees.
+def tilt_from_accel(ax: float, ay: float, az: float, *, nose_axis: str = "z") -> int | None:
+    """Angle of the selected nose axis from the at-rest gravity reference.
 
     MRCC has no tilt field but does carry body-frame accelerometer axes. At rest
-    that vector is gravity, so its angle off the Z axis is the vehicle's tilt —
-    which is exactly what `tilt_deg` means on the pad and in slow flight. Under
-    thrust it is thrust+gravity and reads low; that is a property of deriving
-    tilt from an accelerometer alone, not of this arithmetic.
+    this gives pad tilt when nose_axis matches the physical installation.
+    It is not an in-flight attitude estimate: thrust and free fall invalidate
+    an accelerometer-only gravity reference. Raw transmitted axes stay intact.
 
     Returns None for a zero-length vector (all three axes reading exactly 0.0 is
     a dead IMU, not a vehicle in free fall) so the caller can leave tilt unset.
@@ -281,10 +290,11 @@ def tilt_from_accel(ax: float, ay: float, az: float) -> int | None:
     norm = math.sqrt(ax * ax + ay * ay + az * az)
     if norm <= 0.0:
         return None
-    return _clamp(math.degrees(math.acos(max(-1.0, min(1.0, az / norm)))), 0, 180)
+    axial = {"x": ax, "y": ay, "z": az}[nose_axis]
+    return _clamp(math.degrees(math.acos(max(-1.0, min(1.0, axial / norm)))), 0, 180)
 
 
-def decode_line(line: str) -> MrccFrame | None:
+def decode_line(line: str, *, nose_axis: str = "z") -> MrccFrame | None:
     """One text line -> MrccFrame, or None if it isn't an MRCC telemetry line.
 
     None covers both "not ours" (the receiver's own `alive 32046` chatter) and
@@ -357,7 +367,8 @@ def decode_line(line: str) -> MrccFrame | None:
     t.gps_sats = _clamp(fields.get("SAT", 0.0), 0, 255)
     t.gps_fix = GPS_FIX_MAP.get(int(fields.get("GPSFIX", 0.0)), packet.GpsFix.NONE)
 
-    tilt = tilt_from_accel(fields.get("AX", 0.0), fields.get("AY", 0.0), fields.get("AZ", 0.0))
+    tilt = tilt_from_accel(fields.get("AX", 0.0), fields.get("AY", 0.0), fields.get("AZ", 0.0),
+                           nose_axis=nose_axis)
     if tilt is not None:
         t.tilt_deg = tilt
 
@@ -546,6 +557,7 @@ class MrccParser:
 
     def __init__(self) -> None:
         self._buf = bytearray()
+        self.channel: str | None = None
         self.parse_errors = 0
         self.ignored = 0
         self.lines = 0
@@ -583,10 +595,13 @@ class MrccParser:
             self.lines += 1
 
             if MARKER not in line:
+                channel = GS_CHANNEL_RE.search(line)
+                if channel:
+                    self.channel = channel.group(1).upper()
                 self.ignored += 1
                 continue
 
-            frame = decode_line(line)
+            frame = decode_line(line, nose_axis=NOSE_AXIS_BY_CHANNEL.get(self.channel, "z"))
             if frame is None:
                 self.parse_errors += 1
                 continue
