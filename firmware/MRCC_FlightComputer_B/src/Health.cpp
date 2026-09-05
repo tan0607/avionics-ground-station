@@ -290,6 +290,8 @@ void printStatus() {
 
   Serial.println();
 
+  printArmReadiness();
+
   // Subsystem health next - one glance tells you what is alive
   Serial.print("[SYS] IMU=");
   Serial.print(imuOK   ? "OK"   : "DOWN");

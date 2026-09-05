@@ -40,6 +40,13 @@ static bool    filterPrimed   = false;
 static bool    groundPrimed   = false;
 static bool    autoArmBlocked = false;
 
+// Diagnostic history only: preserve the sample that reset the pad timer.
+// A status print several seconds later may show healthy values again.
+static const char* padResetReason = "NONE";
+static unsigned long padResetTime = 0;
+static float padResetAccel = 0.0;
+static float padResetGyro = 0.0;
+
 
 static void enterState(uint8_t s);
 static bool updateAltitude();
@@ -276,25 +283,47 @@ void disarmFlight() {
 // limited to one per AUTO_ARM_RETRY.
 // =====================================================
 
-// Says why the board is not arming. Reached only when the
-// settle test has been failing for AUTO_ARM_STUCK_AFTER,
-// so it costs nothing on a normal pad wait.
-//
-// The case worth naming explicitly is the last one. A
-// scale or offset error puts |a| outside the window for
-// good on a board that is genuinely sitting still, and
-// PAD_ACCEL_TOL is 0.5 against a part whose zero-g offset
-// alone is specified at +-50 mg. Nothing about that looks
-// like a fault from the outside: the board sits there,
-// logging and transmitting perfectly, and simply never
-// arms. Two vehicles means two parts, and the second one
-// is a different die.
+// Printed with regular status and S, not on every flight tick.
+// Last-reset values are historical, not the current sensor readings.
+void printArmReadiness() {
+  if (flightState != FS_PAD) return;
+
+  Serial.print("[ARM] auto=");
+  Serial.print(AUTO_ARM_ENABLED ? "ON" : "OFF");
+  Serial.print(" | blocked_by_X=");
+  Serial.print(autoArmBlocked ? "YES" : "NO");
+  Serial.print(" | fired=");
+  Serial.print(pyroFired ? "YES" : "NO");
+  Serial.print(" | gyro_cal=");
+  Serial.print(gyroCalDone ? "DONE" : "PENDING");
+  // Report the existing timer, including the baro-only boot-time fallback.
+  // This function must not reset or otherwise influence that timer.
+  Serial.print(imuOK ? " | still_timer=" : " | baro_boot_timer=");
+  Serial.print((millis() - (imuOK ? stillSince : padSince)) / 1000.0, 2);
+  Serial.print("/");
+  Serial.print(PAD_STILL_TIME / 1000.0, 2);
+  Serial.print("s | last_reset=");
+  Serial.print(padResetReason);
+  if (padResetTime != 0) {
+    Serial.print(" age=");
+    Serial.print((millis() - padResetTime) / 1000.0, 2);
+    Serial.print("s a=");
+    Serial.print(padResetAccel, 3);
+    Serial.print("m/s2 g=");
+    Serial.print(padResetGyro, 3);
+    Serial.print("deg/s");
+  }
+  Serial.println();
+}
+
+// Explain a settle failure persisting for AUTO_ARM_STUCK_AFTER.
 static void reportAutoArmStuck() {
   Serial.println();
   Serial.println("[FLIGHT] *** NOT ARMED YET ***");
   Serial.print  ("[FLIGHT] In PAD for ");
   Serial.print((millis() - padSince) / 1000);
   Serial.println(" s - the settle test has not passed.");
+  printArmReadiness();
 
   if (!imuOK) {
     Serial.println("[FLIGHT] IMU is DOWN - waiting on the baro settle instead.");
@@ -321,10 +350,9 @@ static void reportAutoArmStuck() {
   Serial.println(PAD_GYRO_TOL, 1);
 
   if (gyroMag < PAD_GYRO_TOL && fabs(accelMag - GRAVITY) >= PAD_ACCEL_TOL) {
-    Serial.println("[FLIGHT] Gyro is quiet, so the board IS still - it is |a|");
-    Serial.println("[FLIGHT] that is out of range. This part reads off by more");
-    Serial.println("[FLIGHT] than PAD_ACCEL_TOL and will NEVER auto-arm until");
-    Serial.println("[FLIGHT] that tolerance is widened to match the hardware.");
+    Serial.println("[FLIGHT] Acceleration is outside the pad window.");
+    Serial.println("[FLIGHT] Check mounting, vibration and sensor readings");
+    Serial.println("[FLIGHT] before changing calibration or the limits.");
   }
 }
 
@@ -534,7 +562,17 @@ void serviceFlight() {
                    fabs(accelMag - GRAVITY) < PAD_ACCEL_TOL &&
                    gyroMag < PAD_GYRO_TOL;
 
-      if (!still) stillSince = millis();
+      if (!still) {
+        stillSince = millis();
+        padResetTime = stillSince;
+        padResetAccel = accelMag;
+        padResetGyro = gyroMag;
+        const bool accelRejected = !(fabs(accelMag - GRAVITY) < PAD_ACCEL_TOL);
+        const bool gyroRejected = !(gyroMag < PAD_GYRO_TOL);
+        padResetReason = !imuOK ? "IMU_DOWN" :
+                         accelRejected && gyroRejected ? "ACCEL+GYRO" :
+                         accelRejected ? "ACCEL" : "GYRO";
+      }
 
       // Slowly follow the weather while we sit there.
       //
