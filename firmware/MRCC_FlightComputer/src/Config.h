@@ -161,6 +161,31 @@ const unsigned long GPS_START_TIMEOUT = 5000;
 #define TX_POWER_DEFAULT  17
 #define TX_COPIES_DEFAULT 2
 
+// LoRa's hard payload limit. txPacket is one byte larger, for snprintf's NUL.
+// Nothing enforces this on the way out - an over-long packet is truncated at
+// the buffer and the transmitter reports the truncated length - so it is the
+// number every optional field has to be measured against before it is added.
+const int TX_PAYLOAD_MAX = 255;
+
+// ---- recorder block cadence ----
+//
+// The vehicle prints its recording state to USB every STATUS_INTERVAL; SDF/SDL/
+// SDE put the same state on the air, for the operator who is 19 km away with no
+// cable. They ride ONE PACKET IN TEN rather than every packet, which at
+// SEND_INTERVAL is that same 5 s.
+//
+// Not every packet, for two reasons that are both hard limits rather than
+// preferences. Bytes: the flight fields alone measure 189-204 on the logs in
+// flights/, against 255. Air: two copies plus COPY_GAP already fill ~87% of the
+// 500 ms window, and the ~25 bytes this block costs is ~40 ms across both
+// copies - affordable once per ten windows, not ten times out of ten.
+//
+// A block that does not fit is dropped, never truncated (see
+// buildTelemetryPacket), so this cadence is a floor on freshness, not a
+// guarantee: a packet that arrives late or not at all just delays the next
+// report by 5 s.
+const unsigned long SD_BLOCK_EVERY = 10;   // packets
+
 
 // -----------------------------------------------------
 // BAROMETER (BMP280) - shares the IMU I2C bus

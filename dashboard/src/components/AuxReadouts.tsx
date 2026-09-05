@@ -58,9 +58,14 @@ const KNOWN: Record<string, { label: string; unit: string; digits: number }> = {
  * subsystem-health panel and the safety readouts respectively, where they are
  * rendered as state; a second copy here as a bare 0 or 1 is a number the
  * operator has to decode, sitting next to the panel that already says it.
+ *
+ * SDF/SDL/SDE — the vehicle's recorder — are hidden on the same grounds AND on
+ * one of their own: they ride one packet in ten, so a cell here would sit empty
+ * for nine frames out of ten and flash a number on the tenth. They are latched
+ * and rendered as the SD row's state instead (useOnboardLog).
  */
 const ORDER = ["P", "MX", "HDG", "COURSE", "GSPEED", "AZ", "AX", "AY", "GX", "GY", "GZ", "VX", "VY", "TEMP"]
-const HIDDEN = new Set(["GPSDATA", "SD", "BA", "IM", "AR", "FI"])
+const HIDDEN = new Set(["GPSDATA", "SD", "BA", "IM", "AR", "FI", "SDF", "SDL", "SDE"])
 
 function orderedKeys(extra: Record<string, number>): string[] {
   const present = Object.keys(extra).filter((k) => !HIDDEN.has(k))

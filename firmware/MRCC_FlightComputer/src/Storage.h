@@ -16,6 +16,13 @@ extern char          logFileName[32];
 extern unsigned long logLineCount;
 extern unsigned long sdErrorCount;
 
+// Which /FLIGHT%03d.CSV the name above resolved to, 1..999. Kept beside the
+// name because the name cannot go on the air: the downlink parses numeric
+// K=V pairs only, so the ground station can be told the FILE but not its
+// filename. 0 means no file was ever opened - the loop that picks one starts
+// at 1, so it is a value a mounted card can never report.
+extern int           logFileIndex;
+
 // Hardware probe results
 #define PROBE_NO_MODULE 0
 #define PROBE_MISO_LOW  1

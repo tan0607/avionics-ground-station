@@ -184,6 +184,15 @@ AUX_FIELDS: tuple[str, ...] = (
     "AX", "AY", "AZ", "VX", "VY",
     "GX", "GY", "GZ", "TEMP",
     "MX", "AR", "FI", "SD", "BA", "IM",
+    # The recorder block, sent one packet in ten (Radio.cpp, SD_BLOCK_EVERY):
+    # the open log file's index, its line count, and the count of failed writes.
+    # SD above says the card is MOUNTED; these say the flight is actually being
+    # RECORDED, which is not the same claim and used to exist only on the
+    # vehicle's USB console. Empty on the nine frames between reports -- that is
+    # this table's normal behaviour for a field a frame did not carry, and it
+    # matters more here than elsewhere: a 0 in aux_sdl would describe a healthy
+    # recorder as a dead one.
+    "SDF", "SDL", "SDE",
 )
 
 # `aux_`-prefixed and lowercased so an aux field can never collide with a

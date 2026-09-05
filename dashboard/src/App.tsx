@@ -13,6 +13,7 @@ import { useTelemetry } from "@/hooks/useTelemetry"
 import { useSensorSeries } from "@/hooks/useSensorSeries"
 import { useTelemetryLog } from "@/hooks/useTelemetryLog"
 import { useFlightRecorder } from "@/hooks/useFlightRecorder"
+import { useOnboardLog } from "@/hooks/useOnboardLog"
 import { useSettings } from "@/hooks/useSettings"
 import { useBackendStats } from "@/hooks/useBackendStats"
 import { useGroundStation } from "@/hooks/useGroundStation"
@@ -116,6 +117,10 @@ function App() {
   // the mission on the header and the channel in the radio are one setting.
   const mission = useMission(gs)
   const sensors = useSensorSeries(telemetry)
+  // The VEHICLE's SD card, latched: its state rides one packet in ten, so it
+  // cannot be read off the current frame the way the health bits are. Distinct
+  // from `recorder` below, which is this laptop cutting its own flight folders.
+  const onboardLog = useOnboardLog(telemetry)
   // Flight folders are operator-declared, so the recorder lifecycle belongs at
   // app level with the always-mounted top bar control rather than inside any
   // individual view.
@@ -237,7 +242,7 @@ function App() {
               {/* safety + phase */}
               <div className="flex min-h-0 flex-col gap-2">
                 <GoNoGo frame={telemetry.frame} />
-                <SubsystemHealth frame={telemetry.frame} />
+                <SubsystemHealth frame={telemetry.frame} onboardLog={onboardLog} />
                 <FlightTimeline state={telemetry.frame?.flightState ?? null} />
               </div>
             </main>

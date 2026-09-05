@@ -428,6 +428,44 @@ def test_mrcc_short_keys_do_not_cost_the_altitude() -> None:
     assert f.extra["MX"] == 284.0                   # apogee as the VEHICLE has it
 
 
+def test_mrcc_recorder_block_reaches_the_screen_and_the_record() -> None:
+    """One packet in ten carries the vehicle's recording state: SDF/SDL/SDE.
+
+    Which file is open, how many lines are in it, how many writes failed -- the
+    `[SD]` console line, for the operator who is 19 km from the USB port. The
+    packet is too full to carry them at 2 Hz, so they ride a 5 s cadence and the
+    ground station sees them on about a tenth of the frames. Both halves of that
+    have to hold: the fields must land somewhere on the frames that DO carry
+    them, and their absence on the other nine must never read as a zero -- a
+    flight recorded as `0 lines, 0 errors` is a working recorder described as a
+    dead one.
+    """
+    f = _current_frame(_CURRENT_BODY + ",SDF=7,SDL=3412,SDE=2")
+
+    assert f.extra["SDF"] == 7
+    assert f.extra["SDL"] == 3412
+    assert f.extra["SDE"] == 2
+
+    row = mrcc.aux_csv_row(f)
+    assert set(row) <= set(mrcc.CSV_COLUMNS)             # DictWriter would raise
+    assert row["aux_sdf"] == 7 and row["aux_sdl"] == 3412 and row["aux_sde"] == 2
+    # Columns of their own, not the catch-all: a field nobody named is a field
+    # nobody plots, and the write rate is read off SDL across two rows.
+    assert row[mrcc.EXTRA_COLUMN] == ""
+
+    # The nine packets in between carry no recorder fields at all. Empty, not 0.
+    quiet = mrcc.aux_csv_row(_current_frame())
+    assert quiet["aux_sdf"] == "" and quiet["aux_sdl"] == "" and quiet["aux_sde"] == ""
+
+    # SD is still the only health evidence. SDE counts failed WRITES on a card
+    # that is still mounted, and a mounted card is what HEALTH_SD means -- the
+    # ground station reads a stalled line count as a recording fault itself,
+    # rather than this parser inventing a peripheral failure the vehicle never
+    # reported.
+    health, known = mrcc.health_from_fields(f)
+    assert known & packet.HEALTH_SD and health & packet.HEALTH_SD
+
+
 def test_mrcc_health_prefers_what_the_vehicle_states() -> None:
     """BA/IM are the flight computer's own baroOK/imuOK. They beat every proxy.
 

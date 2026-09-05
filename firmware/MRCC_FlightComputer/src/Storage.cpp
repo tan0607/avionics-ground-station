@@ -14,6 +14,7 @@ File     logFile;
 char          logFileName[32] = "";
 unsigned long logLineCount    = 0;
 unsigned long sdErrorCount    = 0;
+int           logFileIndex    = 0;
 
 uint8_t probeResult = PROBE_NO_MODULE;
 
@@ -322,6 +323,10 @@ void startNewLogFile() {
 
   for (int i = 1; i < 1000; i++) {
     snprintf(logFileName, sizeof(logFileName), "/FLIGHT%03d.CSV", i);
+    // Set with the name, not after the loop, so the two cannot disagree -
+    // including on the exhausted-card path, where the loop runs out rather
+    // than breaking and the name stays at the last one it built.
+    logFileIndex = i;
     if (!SD.exists(logFileName)) break;
   }
 

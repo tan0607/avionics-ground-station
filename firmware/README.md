@@ -10,6 +10,7 @@ Two Arduino sketches, two boards, one radio link.
 | `GS_Doctor/` | classic **ESP32** | `esp32:esp32:esp32` | bench-only LoRa link fault finder — the receiver's twin of `SD_Doctor`. Flash it to the ground-station board when packets stop arriving |
 | `TX_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only fault finder for the **flight computer** — radio, IMU, baro, GPS, brownout. The half of the link `GS_Doctor` cannot see |
 | `PinForce/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only drive test on the six LoRa lines. `TX_Doctor` reports a line as held; this one puts ~40 mA behind the pad to say whether that hold is a soft clamp or a hard short. Run it on both boards and diff the tables |
+| `Pyro_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only MOSFET module check — the only sketch here that raises the pyro gate on purpose. Drives it from the serial monitor so a meter can answer whether the FET switches, **with a resistor across OUT and no e-match anywhere** |
 
 ### When the link is silent, flash `GS_Doctor`
 
@@ -89,6 +90,26 @@ len=237 RSSI=-53 SNR=10.2 | MRCC,PKT=207,T=207.5,ST=LANDED,AL=0.0,...,SD=1,BA=1,
 That exact shape is the contract with the laptop — `shared/protocol/mrcc.py`
 parses it, and the `len=` field is what lets the backend tell a truncated frame
 from a clean one. Do not reorder or rename the prefix.
+
+**One packet in ten carries the recorder block**, appended to the line above:
+
+```
+,SDF=7,SDL=3412,SDE=0
+```
+
+The open `/FLIGHT%03d.CSV` by index, its line count, and the count of failed
+writes — what `printStatus` prints to USB every 5 s, for the operator who is
+19 km from that port. `SD=1` says the card is MOUNTED; a card that mounts, opens
+a file and then stops accepting writes says `SD=1` for the whole flight, and a
+line count that stops moving is the only thing that shows it. The ground station
+differences `SDL` between reports for the write rate, so no rate is sent.
+
+Every tenth packet, not every packet, because the packet is 189–204 bytes
+measured against a 255-byte limit and the duty cycle above has 66 ms of margin.
+`SD_BLOCK_EVERY` in `Config.h` sets the cadence, and the block is **dropped
+rather than truncated** when the flight fields leave no room for it: what sits
+at the tail of the packet is the health block, and losing `SDL` for one tick
+costs nothing next to losing the fields that say something is wrong.
 
 **Renaming a payload key is a breaking change, even though nothing errors.**
 `mrcc.py` looks every field up by name, so an unknown key parses fine and lands

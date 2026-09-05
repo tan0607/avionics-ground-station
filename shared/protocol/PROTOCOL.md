@@ -136,6 +136,12 @@ a bit clear from the very first packet never came up at all; a bit that goes
 `FLAG_SD_OK` = writes are currently succeeding. A mounted card with failing
 writes is `1` + `0`.
 
+MRCC carries no such flag, and `mrcc.py` leaves it unknown rather than guessing:
+one frame cannot see whether a write landed. What the vehicle sends instead is
+the log's own line count (`SDL`, one packet in ten), and the ground station reads
+the difference between two reports — a count that has stopped moving is that
+same `1` + `0`, derived where the history is rather than asserted per frame.
+
 **A `health` of `0x00` means "no peripherals up", not "field absent."** Decoders
 reading pre-health logs should treat a missing byte as *unknown* and render it
 as such — six red alarms for an old capture would be a false alarm.

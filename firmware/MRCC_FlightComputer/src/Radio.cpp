@@ -5,6 +5,7 @@
 #include "Flight.h"
 #include "Pyro.h"
 #include "Filters.h"
+#include "Storage.h"   // the recorder block: file index, lines, write errors
 #include <SPI.h>
 #include <LoRa.h>
 
@@ -171,6 +172,41 @@ static void buildTelemetryPacket() {
     txFiltered ? headingFilt : heading,
     sdOK ? 1 : 0, baroOK ? 1 : 0, imuOK ? 1 : 0
   );
+
+  // ---- recorder block, one packet in ten (SD_BLOCK_EVERY) ----
+  //
+  // What printStatus's [SD] line says, minus the parts the ground can work out
+  // for itself: which file is open (SDF), how many lines are in it (SDL), and
+  // how many writes failed (SDE). The write RATE is not sent -- the ground
+  // station differences SDL between reports exactly as printStatus differences
+  // it for logHz -- and neither is the byte count, which tracks the line count
+  // and is the field worth least per byte on a link with ~20 to spare.
+  //
+  // The SD bit already on every packet says the card is MOUNTED. It does not
+  // say the flight is being recorded: a card that mounts, opens a file and then
+  // stops accepting writes reports SD=1 for the whole flight. A line count that
+  // stops moving is what shows that, and until now it existed only on a serial
+  // port nobody can reach once the rocket is on the pad.
+  //
+  // Built into a scratch buffer and copied only IF IT FITS. Formatting straight
+  // into the tail would let a long packet -- a five-digit altitude over a
+  // full-width GPS fix -- push past the buffer, and what sits at the tail is the
+  // health block. Losing SDL for one tick costs nothing. Losing SD/BA/IM costs
+  // the operator the fields that say something is wrong, in order to report how
+  // many lines got written.
+  if (packetNumber % SD_BLOCK_EVERY == 0) {
+    char block[40];
+    int  n = snprintf(block, sizeof(block), ",SDF=%d,SDL=%lu,SDE=%lu",
+                      logFileIndex, logLineCount, sdErrorCount);
+
+    size_t used = strlen(txPacket);
+
+    // n < sizeof(block) rejects a block snprintf itself had to truncate, which
+    // would otherwise be appended as a half-written field.
+    if (n > 0 && n < (int) sizeof(block) && used + n <= TX_PAYLOAD_MAX) {
+      strcpy(txPacket + used, block);
+    }
+  }
 
   txPacketLen = strlen(txPacket);
 }

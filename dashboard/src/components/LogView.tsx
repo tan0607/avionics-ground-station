@@ -52,6 +52,12 @@ const AUX_HIDDEN = new Set(["GPSDATA"])
 
 /** Shorter than the Aux strip's labels — these are column heads, not readouts. */
 const AUX_LABEL: Record<string, string> = {
+  // The recorder block, which arrives on one packet in ten: the column is
+  // mostly empty by design, and empty is the honest rendering of a frame that
+  // carried no report.
+  SDF: "Log #",
+  SDL: "Log ln",
+  SDE: "Log err",
   P: "Press",
   HDG: "Hdg",
   COURSE: "Crs",
