@@ -44,43 +44,87 @@ export interface MissionState {
   supported: boolean
   /** A channel command is in flight. */
   busy: boolean
-  /** Pick a mission by name; retunes the receiver when there is one. */
-  select: (name: string) => void
+  /** Target awaiting the operator's confirmation; selection has not changed. */
+  requested: Mission | null
+  /** Whether incoming frames can belong to the selected vehicle. */
+  acceptTelemetry: boolean
+  /** Request a switch; only confirm() retunes the receiver. */
+  select: (name: string, trigger?: HTMLElement) => void
+  cancel: () => void
+  confirm: () => Promise<void>
 }
 
-export function useMission(gs: GroundStation): MissionState {
+export function useMission(
+  gs: GroundStation,
+  beforeSwitch?: () => Promise<boolean>,
+): MissionState {
   const [mission, setMission] = useState<Mission>(DEFAULT_MISSION)
+  const [requested, setRequested] = useState<Mission | null>(null)
+  const [switching, setSwitching] = useState(false)
+  const switchingRef = useRef(false)
+  const returnFocus = useRef<HTMLElement | null>(null)
   // Once the operator has chosen, the box no longer moves the selection under
   // them — otherwise a slow retune would snap the picker back mid-switch.
   const chosen = useRef(false)
+  // A failed /gs poll must not turn a serial session into a label-only session
+  // and allow the old rocket's frames back into a newly cleared graph.
+  const radioRequired = useRef(gs.supported)
+  if (gs.supported) radioRequired.current = true
 
   const confirmed = missionForChannel(gs.channel)
 
   useEffect(() => {
     if (!chosen.current && confirmed) setMission(confirmed)
   }, [confirmed])
+  useEffect(() => {
+    if (!requested && !switching && !gs.busy && returnFocus.current) {
+      returnFocus.current.focus()
+      returnFocus.current = null
+    }
+  }, [requested, switching, gs.busy])
 
   const { supported, setChannel } = gs
+  const pending = radioRequired.current && confirmed?.name !== mission.name
   const select = useCallback(
-    (name: string) => {
+    (name: string, trigger?: HTMLElement) => {
       const next = missionByName(name)
-      if (!next) return
-      chosen.current = true
-      setMission(next)
-      // No radio in this session (mock/replay/fake): the name is just a label
-      // for the flight folder, and there is nothing to disagree with it.
-      if (supported) void setChannel(next.channel)
+      if (!next || gs.busy || switchingRef.current) return
+      if (next.name === mission.name && !pending) return
+      returnFocus.current = trigger ?? (document.activeElement as HTMLElement | null)
+      setRequested(next)
     },
-    [supported, setChannel],
+    [gs.busy, mission.name, pending],
   )
+  const cancel = useCallback(() => {
+    if (!switchingRef.current) setRequested(null)
+  }, [])
+  const confirm = useCallback(async () => {
+    if (!requested || switchingRef.current || gs.busy) return
+    switchingRef.current = true
+    setSwitching(true)
+    try {
+      if (beforeSwitch && !(await beforeSwitch())) return
+      chosen.current = true
+      setMission(requested)
+      setRequested(null)
+      if (radioRequired.current) await setChannel(requested.channel)
+    } finally {
+      switchingRef.current = false
+      setSwitching(false)
+    }
+  }, [requested, beforeSwitch, gs.busy, setChannel])
 
   return {
     missions: MISSIONS,
     mission,
     confirmed,
-    pending: supported && confirmed !== null && confirmed.name !== mission.name,
+    pending,
     supported,
-    busy: gs.busy,
+    busy: gs.busy || switching,
+    requested,
+    acceptTelemetry: !chosen.current || (!pending && !gs.busy && !switching),
     select,
+    cancel,
+    confirm,
   }
 }

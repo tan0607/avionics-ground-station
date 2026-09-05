@@ -77,7 +77,11 @@ export function useOnboardLog(t: TelemetryState): OnboardLog {
   const frame = t.frame
 
   useEffect(() => {
-    if (!frame) return
+    if (!frame) {
+      lastSeq.current = null
+      setStatus(NOTHING_YET)
+      return
+    }
     if (frame.seq === lastSeq.current) return
     lastSeq.current = frame.seq
 

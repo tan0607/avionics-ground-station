@@ -4,10 +4,10 @@
  * a stacked sensor-chart column (altitude, then vertical-speed + tilt + the
  * body accelerations) on the left, GO/NO-GO + flight-state timeline on the right. Pure black, 1px hairline
  * panels, white data / semantic status only. One viewport, no scroll.
- * The whole data layer (useTelemetry off the mock) is unchanged; the secondary
- * channels come from useSensorSeries, which piggybacks on it without touching it.
+ * useTelemetry owns the live data and mission reset; the secondary channels
+ * follow its chart revision through useSensorSeries.
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 import { useTelemetry } from "@/hooks/useTelemetry"
 import { useSensorSeries } from "@/hooks/useSensorSeries"
@@ -18,6 +18,9 @@ import { useSettings } from "@/hooks/useSettings"
 import { useBackendStats } from "@/hooks/useBackendStats"
 import { useGroundStation } from "@/hooks/useGroundStation"
 import { useMission } from "@/hooks/useMission"
+import { defaultFlightLabel } from "@/lib/mission"
+import { MissionSwitchDialog } from "@/components/MissionSwitchDialog"
+import { RecordingReminder } from "@/components/RecordingReminder"
 import { AlertStack } from "@/components/AlertStack"
 import { useAlarmSound } from "@/hooks/useAlarmSound"
 import { Card } from "@/components/ui/card"
@@ -109,22 +112,24 @@ function ChartCard({
 
 function App() {
   const [view, setView] = useState<ViewId>("live")
-  const telemetry = useTelemetry()
+  const gs = useGroundStation()
+  // Recorder and mission controls live across every view. Finish an active
+  // flight before retuning so a named flight folder does not mix vehicles.
+  const recorder = useFlightRecorder()
+  const { recording: isRecording, status: recorderStatus, stop: stopRecording } = recorder
+  const beforeSwitch = useCallback(async () => {
+    if (gs.supported && recorderStatus !== "ok") return false
+    return isRecording ? stopRecording() : true
+  }, [gs.supported, recorderStatus, isRecording, stopRecording])
+  const mission = useMission(gs, beforeSwitch)
+  const telemetry = useTelemetry(mission.mission.name, mission.acceptTelemetry)
   // Live sources only: in mock mode there is no backend to be broken.
   const stats = useBackendStats(telemetry.source === "mock" ? 60_000 : 2000)
-  const gs = useGroundStation()
-  // Which rocket this console flies. Selecting one retunes the receiver, so
-  // the mission on the header and the channel in the radio are one setting.
-  const mission = useMission(gs)
   const sensors = useSensorSeries(telemetry)
   // The VEHICLE's SD card, latched: its state rides one packet in ten, so it
   // cannot be read off the current frame the way the health bits are. Distinct
-  // from `recorder` below, which is this laptop cutting its own flight folders.
+  // from `recorder`, which is this laptop cutting its own flight folders.
   const onboardLog = useOnboardLog(telemetry)
-  // Flight folders are operator-declared, so the recorder lifecycle belongs at
-  // app level with the always-mounted top bar control rather than inside any
-  // individual view.
-  const recorder = useFlightRecorder()
 
   // What the log needs from the recorder, narrowed here so the accumulator does
   // not take a dependency on the whole recorder state (and re-run on its poll).
@@ -153,6 +158,7 @@ function App() {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <h1 className="sr-only">Rocket ground station — live telemetry</h1>
+      <MissionSwitchDialog mission={mission} recorder={recorder} />
 
       {/* Bottom-right, over everything: what is wrong and what to do about it.
           Derived from live state, so a card clears when its cause does. */}
@@ -170,6 +176,13 @@ function App() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar state={telemetry} backend={stats.data?.source} recorder={recorder} mission={mission} />
+        <RecordingReminder
+          liveSource={telemetry.source === "ws" && stats.data?.source?.kind === "serial"}
+          recorder={recorder}
+          mission={mission.mission.name}
+          switching={mission.busy || mission.pending || Boolean(mission.requested)}
+          onStart={() => void recorder.start(defaultFlightLabel(mission.mission.name))}
+        />
 
         {view === "live" && (
           <>
@@ -251,7 +264,7 @@ function App() {
 
         {view === "map" && (
           <main className="min-h-0 flex-1 p-2">
-            <FlightMap frame={telemetry.frame} link={telemetry.link} />
+            <FlightMap key={mission.mission.name} frame={telemetry.frame} link={telemetry.link} />
           </main>
         )}
 

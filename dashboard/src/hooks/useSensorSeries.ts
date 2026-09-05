@@ -75,13 +75,19 @@ export function useSensorSeries(t: TelemetryState): SensorSeries {
     const s = ref.current
     const xs = t.chart.xs
     const frame = t.frame
-    if (!frame) return
+    if (!frame) {
+      for (const c of CHANNELS) s[c].length = 0
+      s.xs = xs
+      s.rev += 1
+      forceRender((n) => n + 1)
+      return
+    }
 
     const next = sample(frame)
     // vspeed is the length reference: every channel is appended in lockstep.
     const have = s.vspeed.length
 
-    if (xs.length < have) {
+    if (s.xs !== xs || xs.length < have) {
       // session reset — the altitude series was cleared
       for (const c of CHANNELS) s[c].length = 0
     }

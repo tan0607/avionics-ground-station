@@ -14,6 +14,8 @@
 
 :root {
   color-scheme: dark;
+  --z-modal-backdrop: 60;
+  --z-modal: 61;
 
   /* --- surfaces: PURE-BLACK monochrome ramp (chroma 0, no tint) ---
    * Base is true #000; the card surface is a clear notch of neutral grey above

@@ -365,7 +365,7 @@ function RadioChannelCard({ gs, mission }: { gs: GroundStation; mission: Mission
                 disabled={!gs.supported || gs.busy}
                 aria-current={active ? "true" : undefined}
                 title={`Retune the receiver to channel ${m.channel}`}
-                onClick={() => mission.select(m.name)}
+                onClick={(e) => mission.select(m.name, e.currentTarget)}
                 className={cn(
                   "px-2.5 py-1 text-[0.6875rem] uppercase tracking-wide transition-colors",
                   "disabled:cursor-not-allowed disabled:opacity-40",
@@ -386,8 +386,10 @@ function RadioChannelCard({ gs, mission }: { gs: GroundStation; mission: Mission
 
       {mission.pending && (
         <p className="px-2 pb-2 text-[0.6875rem] leading-snug text-caution">
-          Asked for {mission.mission.name}; the receiver still reports {heard?.name}.
-          Frames arriving now are {heard?.name}'s.
+          Asked for {mission.mission.name}; {heard
+            ? `the receiver still reports ${heard.name}.`
+            : "waiting for the receiver to confirm its channel."}
+          {heard && ` Frames arriving now are ${heard.name}'s.`}
         </p>
       )}
 

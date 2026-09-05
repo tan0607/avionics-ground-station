@@ -51,8 +51,8 @@ export interface RecorderState extends FlightPayload {
   busy: boolean
   /** Last failure, shown next to the control. Cleared by the next success. */
   error: string | null
-  start: (label?: string) => Promise<void>
-  stop: () => Promise<void>
+  start: (label?: string) => Promise<boolean>
+  stop: () => Promise<boolean>
 }
 
 const EMPTY: FlightPayload = { session: null, recording: false, flight: null, completed: [] }
@@ -64,20 +64,24 @@ export function useFlightRecorder(): RecorderState {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const alive = useRef(true)
+  const mutating = useRef(false)
+  const requestVersion = useRef(0)
 
   const refresh = useCallback(async () => {
+    if (mutating.current) return
+    const version = ++requestVersion.current
     try {
       const res = await fetch(apiUrl("/flight"), { cache: "no-store" })
       // 503 = the server is up but has no session yet. That is a real answer,
       // not an unreachable backend, and its body is already the empty shape.
       if (!res.ok && res.status !== 503) throw new Error(String(res.status))
       const data = (await res.json()) as FlightPayload
-      if (alive.current) {
+      if (alive.current && version === requestVersion.current) {
         setPayload(data)
         setStatus("ok")
       }
     } catch {
-      if (alive.current) setStatus("unreachable")
+      if (alive.current && version === requestVersion.current) setStatus("unreachable")
     }
   }, [])
 
@@ -93,6 +97,9 @@ export function useFlightRecorder(): RecorderState {
 
   const post = useCallback(
     async (path: string, body: object) => {
+      if (mutating.current) return false
+      mutating.current = true
+      ++requestVersion.current // invalidate polls that started before this action
       setBusy(true)
       try {
         const res = await fetch(apiUrl(path), {
@@ -105,15 +112,22 @@ export function useFlightRecorder(): RecorderState {
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
           setError(typeof data?.error === "string" ? data.error : `HTTP ${res.status}`)
+          return false
         } else {
           setError(null)
           // The response IS the new status, so the button settles immediately
           // instead of waiting out the poll.
-          if (alive.current) setPayload(data as FlightPayload)
+          if (alive.current) {
+            setPayload(data as FlightPayload)
+            setStatus("ok")
+          }
+          return true
         }
       } catch {
         setError("backend unreachable")
+        return false
       } finally {
+        mutating.current = false
         setBusy(false)
         refresh()
       }

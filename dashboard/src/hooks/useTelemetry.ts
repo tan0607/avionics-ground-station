@@ -20,7 +20,7 @@
  * chart series carries a `rev` counter so uPlot can diff without React
  * comparing hundreds of samples. See DESIGN_SPECS §2 (native WS) / §3 (link).
  */
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   Flag,
   FlightState,
@@ -163,8 +163,10 @@ function defaultWsUrl(): string {
   return `${proto}://${host}/ws`
 }
 
-export function useTelemetry(): TelemetryState {
+export function useTelemetry(resetKey = "", acceptFrames = true): TelemetryState {
   const [{ source, url }] = useState(chooseSource)
+  const acceptRef = useRef(acceptFrames)
+  const previousKey = useRef(resetKey)
 
   // --- mutable accumulators (never cause a render on their own) ------------
   const frameRef = useRef<TelemetryFrame | null>(null)
@@ -202,6 +204,30 @@ export function useTelemetry(): TelemetryState {
     chart: chartRef.current,
     alarms: { linkStale: false, noDeploy: false },
   }))
+
+  // Reset the display without reconnecting /ws: a reconnect replays the backend's
+  // cached last frame, which can still be from the previous vehicle.
+  useLayoutEffect(() => {
+    acceptRef.current = acceptFrames
+    if (previousKey.current === resetKey) return
+    previousKey.current = resetKey
+    frameRef.current = null
+    lastArrivalRef.current = 0
+    launchHostRef.current = null
+    launchAtRef.current = null
+    maxAltRef.current = 0
+    lastSeqRef.current = null
+    lossRef.current = []
+    chartRef.current = {
+      xs: [], ys: [], apogee: null, liftoffT: null, landedT: null,
+      rev: chartRef.current.rev + 1,
+    }
+    setSnapshot((prev) => ({
+      ...prev, frame: null, link: "down", linkAgeMs: 0, tPlusSec: null,
+      frameTPlusSec: null, maxAltM: 0, lossFraction: 0, lineHz: 0, frameHz: 0,
+      chart: chartRef.current, alarms: { linkStale: false, noDeploy: false },
+    }))
+  }, [resetKey, acceptFrames])
 
   useEffect(() => {
     let raf = 0
@@ -276,6 +302,7 @@ export function useTelemetry(): TelemetryState {
 
     /** Ingest one decoded frame: update loss stats, launch clock, chart, max alt. */
     const ingest = (frame: TelemetryFrame) => {
+      if (!acceptRef.current) return
       const now = Date.now()
 
       // Session reset: the onboard clock jumping backwards means a fresh flight

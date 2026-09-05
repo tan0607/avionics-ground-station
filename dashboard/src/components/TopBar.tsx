@@ -33,7 +33,7 @@ import type { MissionState } from "@/hooks/useMission";
  */
 function MissionSelect({ mission }: { mission: MissionState }) {
   const { confirmed, pending, supported, busy } = mission;
-  const note = pending
+  const note = pending && confirmed
     ? `box on ${confirmed?.name}`
     : supported && !confirmed
       ? "channel unheard"
@@ -43,7 +43,7 @@ function MissionSelect({ mission }: { mission: MissionState }) {
     <span className="flex items-baseline gap-2">
       <select
         value={mission.mission.name}
-        onChange={(e) => mission.select(e.target.value)}
+        onChange={(e) => mission.select(e.target.value, e.currentTarget)}
         disabled={busy}
         aria-label="Mission — selects the vehicle and retunes the receiver"
         title={
@@ -290,9 +290,11 @@ function FlightNameField({
 function RecordButton({
   recorder,
   mission,
+  switching,
 }: {
   recorder: RecorderState;
   mission: string;
+  switching: boolean;
 }) {
   const [armed, setArmed] = useState(false);
   // Lazy initialiser: defaultFlightLabel() reads the clock, and running it on
@@ -309,6 +311,7 @@ function RecordButton({
 
   const { recording, flight, busy, status, session } = recorder;
   const offline = status !== "ok" || !session;
+  const blocked = offline || busy || (!recording && switching);
 
   useEffect(() => {
     if (!armed) return;
@@ -346,7 +349,7 @@ function RecordButton({
   }, [mission]);
 
   const onClick = () => {
-    if (busy || offline) return;
+    if (blocked) return;
     if (!recording) {
       recorder.start(name.trim() || defaultFlightLabel(mission));
     } else if (armed) {
@@ -363,7 +366,9 @@ function RecordButton({
     : armed
       ? "STOP?"
       : `REC ${fmtDuration(elapsed)}`;
-  const title = offline
+  const title = !recording && switching
+    ? "Wait for the receiver to confirm the selected vehicle before recording"
+    : offline
     ? "No backend session — start backend.app to record a flight folder"
     : recording
       ? `Recording flights/${session}/${flight?.flight} · ${flight?.rows ?? 0} rows` +
@@ -380,13 +385,13 @@ function RecordButton({
             typed.current = true;
             setName(v);
           }}
-          disabled={offline || busy}
+          disabled={blocked}
         />
       )}
       <button
         type="button"
         onClick={onClick}
-        disabled={offline || busy}
+        disabled={blocked}
         aria-pressed={recording}
         title={title}
         className={cn(
@@ -504,7 +509,8 @@ export function TopBar({
       </Segment>
 
       <div className="ml-auto flex items-center px-4">
-        <RecordButton recorder={recorder} mission={mission.mission.name} />
+        <RecordButton recorder={recorder} mission={mission.mission.name}
+          switching={mission.busy || mission.pending || Boolean(mission.requested)} />
       </div>
 
       <div className="flex items-center px-4">
