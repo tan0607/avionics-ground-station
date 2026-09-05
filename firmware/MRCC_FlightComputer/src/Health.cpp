@@ -246,16 +246,36 @@ void printStatus() {
     Serial.print("m ref=");
     Serial.print(groundAlt, 1);
     Serial.print("m");
-  }
 
-  // Only when it has happened. On a clean board this line never
-  // appears, so its presence is the whole message.
-  if (baroSpikeCount > 0) {
-    Serial.print(" | SPIKES=");
-    Serial.print(baroSpikeCount);
-    Serial.print(" last=");
-    Serial.print(baroSpikeAlt, 0);
-    Serial.print("m");
+    // Only when it has happened. On a clean board this line never
+    // appears, so its presence is the whole message.
+    //
+    // This block used to sit OUTSIDE the baroOK test, and the else
+    // below was therefore paired with the spike count rather than
+    // with the sensor. Both halves were inverted by it: a healthy
+    // board with zero spikes printed "NO BARO - apogee would be
+    // TIMER ONLY" on every status line, and a board that HAD spiked
+    // never printed that warning at all - not even with the
+    // barometer genuinely down. The one line an operator must be
+    // able to trust on the pad cried wolf whenever it was fine and
+    // stayed quiet when it was not.
+    if (baroSpikeCount > 0) {
+      Serial.print(" | SPIKES=");
+      Serial.print(baroSpikeCount);
+      Serial.print(" last=");
+      Serial.print(baroSpikeAlt, 0);
+      Serial.print("m");
+    }
+
+    // A different fault from a spike: the sensor is not refusing a
+    // reading, it is refusing the trigger. Baro.cpp stops publishing
+    // when this happens rather than re-serving the last conversion,
+    // so a climbing count with a healthy-looking altitude means the
+    // altitude is about to go stale, not that it is wrong.
+    if (baroTriggerFails > 0) {
+      Serial.print(" | TRIG_FAIL=");
+      Serial.print(baroTriggerFails);
+    }
   }
   else {
     Serial.print(" | NO BARO - apogee would be TIMER ONLY");
