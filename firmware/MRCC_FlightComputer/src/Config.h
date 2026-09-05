@@ -22,7 +22,7 @@ const float GRAVITY = 9.80665;
 // LORA (SX1278) - on the default SPI bus
 // -----------------------------------------------------
 
-#define LORA_SCK   47
+#define LORA_SCK   12
 #define LORA_MISO  13
 #define LORA_MOSI  11
 #define LORA_SS    10
@@ -77,7 +77,7 @@ const float GRAVITY = 9.80665;
 #define VEHICLE_A 1
 #define VEHICLE_B 2
 
-#define VEHICLE  VEHICLE_B          // <<<< CHANGE ME PER ROCKET
+#define VEHICLE  VEHICLE_A          // <<<< CHANGE ME PER ROCKET
 
 #if   VEHICLE == VEHICLE_A
   #define LORA_FREQ     433300000   // 433.3 MHz
@@ -190,6 +190,24 @@ const unsigned long BARO_STALE    = 1000;  // no reading this long = down
 // float. Two vehicles run this firmware and only one does
 // it, so the cause is in the wiring, not here; this is the
 // net under it either way.
+//
+// UPDATE - the paragraph above guessed at the mechanism and
+// guessed wrong, though its conclusion held. Measured on the
+// bench with TX_Doctor test 8: A1R's part accepts ctrl_meas
+// 0x33, holds normal mode for ~150 ms, then loses the
+// configuration outright - ctrl_meas reads back 0x00 and the
+// data registers sit at 0x80000, their power-on reset value.
+// It is not a corrupted transfer. It is the part RESETTING
+// under the sustained current of continuous conversion, and
+// the same part runs the identical x8 conversion perfectly
+// when asked one sample at a time.
+//
+// That matters to this gate, because a reset part does not
+// produce a spike. It produces a STEADY wrong value, and a
+// rate gate cannot see something with no rate. The absolute
+// BARO_MIN_HPA/BARO_MAX_HPA net below is what actually
+// caught it. Baro.cpp now runs the sensor in forced mode,
+// which removes the cause; keep both nets anyway.
 //
 // It has to be a net, because that reading is not a
 // cosmetic problem. Fed to the alpha-beta filter a 4000 m

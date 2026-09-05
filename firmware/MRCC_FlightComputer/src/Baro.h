@@ -28,5 +28,10 @@ extern unsigned long   baroSpikeCount;
 // the thing without watching serial at the moment it happens.
 extern float           baroSpikeAlt;
 
+// Conversions the sensor would not accept. Non-zero means the I2C
+// WRITE is failing, which is a different fault from a bad reading -
+// see Baro.cpp.
+extern unsigned long   baroTriggerFails;
+
 bool initBaro(bool verbose);
 void readBaro();

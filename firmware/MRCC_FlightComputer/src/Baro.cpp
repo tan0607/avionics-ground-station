@@ -11,6 +11,34 @@ float           baroSpikeAlt   = 0.0;
 
 static unsigned long lastBaroRead = 0;
 
+// Samples lost because the sensor would not accept a trigger. Unlike a
+// spike, this is not the sensor disagreeing with us - it is the I2C
+// write failing, which means the next read would hand back the LAST
+// conversion all over again.
+unsigned long baroTriggerFails = 0;
+
+// ctrl_meas: osrs_t in 7:5, osrs_p in 4:2, mode in 1:0.
+// x1 temperature, x8 pressure, FORCED - the same oversampling the
+// sensor ran in normal mode, taken one conversion at a time.
+#define BMP280_REG_CTRL_MEAS 0xF4
+#define BARO_CTRL_FORCED     ((1 << 5) | (4 << 2) | 1)
+
+// Ask for ONE conversion and return immediately.
+//
+// Adafruit's takeForcedMeasurement() does this and then spins on the
+// status register until the conversion lands - about 23 ms at x8. This
+// loop runs at 20 Hz, so that would hand a third of every cycle to a
+// busy-wait, on a loop that already concedes it stalls (Flight.cpp's
+// dt > 0.5 clamp, serviceLogging()'s catch-up). Trigger here, collect
+// on the next pass 50 ms later, when the answer has been sitting in
+// the data registers for 27 ms.
+static bool triggerForced() {
+  Wire.beginTransmission(baroAddress);
+  Wire.write(BMP280_REG_CTRL_MEAS);
+  Wire.write(BARO_CTRL_FORCED);
+  return Wire.endTransmission() == 0;
+}
+
 // Spike gate state. Seeded by the first accepted sample and
 // re-seeded whenever a rejected value refuses to go away.
 static float         lastGoodAlt  = 0.0;
@@ -56,13 +84,42 @@ bool initBaro(bool verbose) {
   // is the useful compromise: about 0.2 m of noise at
   // roughly 25 Hz, which comfortably feeds our 20 Hz
   // state machine.
+  // FORCED, not NORMAL.
+  //
+  // In normal mode the part free-runs: convert, wait t_sb, convert,
+  // forever. At STANDBY_MS_1 with x8 pressure that is very close to a
+  // 100% duty cycle, and it is the highest sustained current this
+  // sensor can be asked to draw. A1R's BMP280 will not survive it - it
+  // accepts ctrl_meas 0x33, holds it for ~150 ms, then loses the
+  // configuration entirely: ctrl_meas reads back 0x00 and the data
+  // registers sit at 0x80000, their reset value. The same part runs
+  // the same x8 conversion perfectly in forced mode, so the peak draw
+  // is fine and only the SUSTAINED draw is not. That is a supply path
+  // with resistance in it, and it is a board fault, not a code one -
+  // but forced mode is worth having on a healthy board anyway, for the
+  // reason below.
+  //
+  // FILTER_X4 -> FILTER_X2 is a consequence, not a preference. The IIR
+  // filter counts SAMPLES, not milliseconds. Free-running it saw one
+  // every ~23 ms, so X4 settled in roughly 100 ms. Triggered at
+  // BARO_INTERVAL it sees one every 50 ms, and X4 would stretch that
+  // past 200 ms - on the sensor apogee is called from. X2 puts it back
+  // near 100 ms. Raise it again only if you also shorten BARO_INTERVAL.
+  //
+  // STANDBY_MS_1 is now inert; t_sb only applies to normal mode. Left
+  // in place so the call still reads as the full configuration.
   bmp.setSampling(
-    Adafruit_BMP280::MODE_NORMAL,
+    Adafruit_BMP280::MODE_FORCED,
     Adafruit_BMP280::SAMPLING_X1,    // temperature
     Adafruit_BMP280::SAMPLING_X8,    // pressure
-    Adafruit_BMP280::FILTER_X4,
+    Adafruit_BMP280::FILTER_X2,
     Adafruit_BMP280::STANDBY_MS_1
   );
+
+  // Put one conversion in flight so the first readBaro() has something
+  // to collect rather than re-reading whatever the last power cycle
+  // left behind.
+  triggerForced();
 
   // A sensor that has just been (re)initialised has no history
   // worth keeping - the recovery path runs after the part has
@@ -98,7 +155,27 @@ void readBaro() {
   if (now - lastBaroRead < BARO_INTERVAL) return;
   lastBaroRead = now;
 
+  // Collect the conversion triggered on the previous pass. Both reads
+  // happen BEFORE the next trigger, so they describe the same sample -
+  // triggering between them could let the temperature come from a
+  // newer conversion than the pressure it compensates.
   float pa = bmp.readPressure();      // Pa
+  float tc = bmp.readTemperature();   // C
+
+  // Re-arm before any gate below can return early. A rejected sample
+  // must not stall the pipeline - the next pass still needs something
+  // to read.
+  //
+  // A failed trigger is deliberately NOT treated as a bad sample. The
+  // data registers still hold the previous conversion, so reading on
+  // would publish a stale altitude with a fresh timestamp and the
+  // staleness watchdog in Health.cpp would never fire: a frozen
+  // altitude would look perfectly healthy all the way to apogee.
+  // Leaving lastBaroUpdate alone lets that watchdog do its job.
+  if (!triggerForced()) {
+    baroTriggerFails++;
+    return;
+  }
 
   // A dead or unplugged sensor reads exactly zero.
   if (pa <= 0.0 || isnan(pa)) return;
@@ -170,7 +247,7 @@ void readBaro() {
   altSeeded    = true;
 
   pressure   = hPa;
-  baroTemp   = bmp.readTemperature();
+  baroTemp   = tc;
   baroAltMSL = alt;
 
   lastBaroUpdate = now;
