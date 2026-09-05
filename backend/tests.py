@@ -391,7 +391,7 @@ def test_mrcc_sd_field_drives_the_sd_health_bit() -> None:
     assert row["sd_ok"] == "", row["sd_ok"]
 
 
-# The exact line firmware/MRCC_FlightComputer/src/Radio.cpp builds today, with a
+# The exact line firmware/MRCC_FlightComputer_A/src/Radio.cpp builds today, with a
 # fix and a fired charge so every field carries a value worth asserting on.
 _CURRENT_BODY = (
     "MRCC,PKT=207,T=207.5,ST=DESCENT,AL=120.5,VZ=-3.5,MX=284.0,AR=1,FI=1,"
@@ -549,7 +549,7 @@ def test_every_flight_phase_the_firmware_sends_is_recognised() -> None:
     MRCC frame cannot distinguish the pairs. Falling back to PAD is the one
     outcome this rejects.
     """
-    src = Path(__file__).resolve().parent.parent / "firmware/MRCC_FlightComputer/src/Flight.cpp"
+    src = Path(__file__).resolve().parent.parent / "firmware/MRCC_FlightComputer_A/src/Flight.cpp"
     assert src.is_file(), f"flight state source moved: {src}"
 
     body = src.read_text()
@@ -618,7 +618,7 @@ def test_every_field_the_firmware_sends_has_somewhere_to_land() -> None:
     enough: that is the catch-all, and a field nobody named is a field nobody
     plotted.
     """
-    src = Path(__file__).resolve().parent.parent / "firmware/MRCC_FlightComputer/src/Radio.cpp"
+    src = Path(__file__).resolve().parent.parent / "firmware/MRCC_FlightComputer_A/src/Radio.cpp"
     assert src.is_file(), f"transmitter source moved: {src}"
 
     text = src.read_text()

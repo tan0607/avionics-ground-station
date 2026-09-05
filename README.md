@@ -422,7 +422,7 @@ defaults per source, so a live run needs no flag.
 | `start.command` | the launcher — deps, build, serial link, backend and console in one action |
 | `backend/` | reads bytes (serial in prod, a simulator in dev), logs raw bytes first, decodes, writes the session CSVs, broadcasts each frame over `/ws`, and serves the built dashboard |
 | `dashboard/` | Vite + React + TS console: Live, Map, Log, Flights, Settings |
-| `firmware/` | the two Arduino sketches that fly — `MRCC_FlightComputer` (ESP32-S3: sensors, filters, flight state, pyro, SD log, downlink) and `MRCC_GroundStation` (ESP32: receives, prints to USB). Plus `SD_Doctor` and host-side filter tooling. **Read `firmware/README.md` before flashing.** |
+| `firmware/` | vehicle sketches `MRCC_FlightComputer_A` / `MRCC_FlightComputer_B` (ESP32-S3: sensors, filters, flight state, pyro, SD log, downlink) and `MRCC_GroundStation` (ESP32: receives, prints to USB). Plus `SD_Doctor` and host-side filter tooling. **Read `firmware/README.md` before flashing.** |
 | `shared/protocol/` | `mrcc.py` decodes the ASCII downlink the vehicle actually sends; `packet.py` is the internal `Telemetry` shape everything downstream consumes; `PROTOCOL.md` documents it |
 | `shared/fake_telemetry.py` | simulates a full flight (pad → boost → apogee → drogue → main → landed) so nothing needs hardware to develop against |
 | `flights/` | recorded sessions and flights (not in git) |

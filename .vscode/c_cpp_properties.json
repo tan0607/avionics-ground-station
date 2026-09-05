@@ -37,16 +37,18 @@
     //
     // forcedInclude exists because a .ino is not quite C++. arduino-cli prepends
     // #include <Arduino.h> to every sketch before compiling it; the C/C++
-    // extension does not. MRCC_FlightComputer.ino opens with "src/Config.h",
+    // extension does not. Both flight computer sketches open with "src/Config.h",
     // which is #pragma once and nothing else, so uint8_t in Config.h is undefined
     // as far as IntelliSense is concerned and the sketch reports errors the real
     // build never sees. Forcing the same header in matches what the build does.
     "configurations": [
         {
-            "name": "Flight computer (ESP32-S3)",
+            "name": "Flight computer A/B (ESP32-S3)",
             "includePath": [
-                "${workspaceFolder}/firmware/MRCC_FlightComputer",
-                "${workspaceFolder}/firmware/MRCC_FlightComputer/src",
+                "${workspaceFolder}/firmware/MRCC_FlightComputer_A",
+                "${workspaceFolder}/firmware/MRCC_FlightComputer_A/src",
+                "${workspaceFolder}/firmware/MRCC_FlightComputer_B",
+                "${workspaceFolder}/firmware/MRCC_FlightComputer_B/src",
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/cores/esp32",
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/variants/esp32s3",
                 "${env:HOME}/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/libraries/**",
@@ -97,7 +99,7 @@
             "name": "Replay harness (host)",
             "includePath": [
                 "${workspaceFolder}/firmware/tools/arduino_shim",
-                "${workspaceFolder}/firmware/MRCC_FlightComputer/src"
+                "${workspaceFolder}/firmware/MRCC_FlightComputer_A/src"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/clang++",

@@ -4,7 +4,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FW = ROOT / "firmware" / "MRCC_FlightComputer" / "src"
+FW = ROOT / "firmware" / "MRCC_FlightComputer_A" / "src"
 
 
 def function_body(source: str, signature: str) -> str:

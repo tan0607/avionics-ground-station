@@ -33,7 +33,7 @@
 // CHANNELS
 //
 // These two frequencies MUST match the ones in
-// MRCC_FlightComputer/src/Config.h. They are the only
+// MRCC_FlightComputer_A/src/Config.h. They are the only
 // numbers duplicated between the two sketches; Arduino
 // builds each sketch on its own, so there is no header
 // to share. Change one, change the other.
@@ -128,7 +128,7 @@ static int gChannel = VEHICLE;    // index into CHANNELS
 // RADIO PARAMETERS
 //
 // Every one of these must equal the transmitter's
-// (MRCC_FlightComputer/src/Radio.cpp, initRadio). A
+// (MRCC_FlightComputer_A/src/Radio.cpp, initRadio). A
 // mismatch in ANY of them is silent - the same failure
 // as a wrong channel: zero packets, no error.
 // -----------------------------------------------------

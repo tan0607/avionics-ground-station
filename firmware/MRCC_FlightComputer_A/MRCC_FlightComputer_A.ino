@@ -71,7 +71,7 @@ void setup() {
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println(" MRCC FLIGHT COMPUTER");
+  Serial.println(" MRCC FLIGHT COMPUTER " VEHICLE_NAME);
   Serial.println("========================================");
 
   // SD first, before anything else loads the supply rail

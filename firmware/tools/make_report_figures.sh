@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")"
 
-SRC=../MRCC_FlightComputer/src
+SRC=../MRCC_FlightComputer_A/src
 
 echo "==> building replay against the flight firmware"
 g++ -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter \

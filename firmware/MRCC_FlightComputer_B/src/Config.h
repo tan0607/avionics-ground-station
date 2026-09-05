@@ -22,7 +22,7 @@ const float GRAVITY = 9.80665;
 // LORA (SX1278) - on the default SPI bus
 // -----------------------------------------------------
 
-#define LORA_SCK   12
+#define LORA_SCK   47
 #define LORA_MISO  13
 #define LORA_MOSI  11
 #define LORA_SS    10
@@ -31,7 +31,7 @@ const float GRAVITY = 9.80665;
 
 
 // -----------------------------------------------------
-// VEHICLE  <-- SET THIS BEFORE EVERY FLASH
+// VEHICLE  <-- FIXED FOR THIS SKETCH; OPEN THE MATCHING A/B FOLDER
 //
 // TWO ROCKETS CANNOT SHARE A CHANNEL. LoRa does not
 // pair: a receiver decodes every packet whose freq /
@@ -77,7 +77,7 @@ const float GRAVITY = 9.80665;
 #define VEHICLE_A 1
 #define VEHICLE_B 2
 
-#define VEHICLE  VEHICLE_A          // <<<< CHANGE ME PER ROCKET
+#define VEHICLE  VEHICLE_B          // fixed for this vehicle sketch
 
 #if   VEHICLE == VEHICLE_A
   #define LORA_FREQ     433300000   // 433.3 MHz
@@ -100,7 +100,7 @@ const float GRAVITY = 9.80665;
 #define SD_SCK   14
 #define SD_MISO  16
 #define SD_MOSI  15
-#define SD_CS    7
+#define SD_CS    6
 
 
 // -----------------------------------------------------

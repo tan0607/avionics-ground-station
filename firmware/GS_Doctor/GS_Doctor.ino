@@ -67,7 +67,7 @@ int PIN_DIO0 = 26;
 // THE CONTRACT
 //
 // Every one of these must equal the TRANSMITTER's
-// setting in MRCC_FlightComputer/src/Radio.cpp,
+// setting in MRCC_FlightComputer_A/src/Radio.cpp,
 // initRadio(). Test 2 reads the chip back and compares
 // against this block, so if you change the link, change
 // it here too or the doctor will report a fault that
@@ -505,7 +505,7 @@ void testPresence() {
 //   part is a source comparison and only you can make
 //   it: the WANT_ block at the top of this file, the
 //   LORA_ defines in MRCC_GroundStation.ino, and
-//   initRadio() in MRCC_FlightComputer/src/Radio.cpp
+//   initRadio() in MRCC_FlightComputer_A/src/Radio.cpp
 //   are three copies of one contract with no compiler
 //   checking any of them against the others.
 //

@@ -20,7 +20,7 @@ import re
 import unittest
 
 
-SRC = Path(__file__).resolve().parents[1] / "MRCC_FlightComputer" / "src"
+SRC = Path(__file__).resolve().parents[1] / "MRCC_FlightComputer_A" / "src"
 RADIO = SRC / "Radio.cpp"
 CONFIG = SRC / "Config.h"
 

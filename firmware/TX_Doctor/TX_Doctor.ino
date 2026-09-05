@@ -66,7 +66,7 @@
 
 
 // =====================================================
-// YOUR PINS - must match MRCC_FlightComputer/src/Config.h
+// YOUR PINS - must match the selected flight computer's src/Config.h
 // =====================================================
 
 int PIN_SCK  = 12;
@@ -91,7 +91,7 @@ int PIN_DIO0 =  8;
 // =====================================================
 // THE CONTRACT
 //
-// Must equal MRCC_FlightComputer/src/Radio.cpp's
+// Must equal MRCC_FlightComputer_A/src/Radio.cpp's
 // initRadio() AND MRCC_GroundStation.ino's LORA_ block.
 // Three copies, no compiler checking any against the
 // others - see test 2.
@@ -509,7 +509,7 @@ void printPins() {
   Serial.printf("  I2C   SDA=%d SCL=%d\n", PIN_I2C_SDA, PIN_I2C_SCL);
   Serial.printf("  GPS   RX=%d TX=%d @ 9600\n", PIN_GPS_RX, PIN_GPS_TX);
   Serial.printf("  PYRO  gate=%d  (held LOW, never raised)\n", PIN_PYRO_GATE);
-  Serial.println("  These must match MRCC_FlightComputer/src/Config.h.");
+  Serial.println("  These must match the selected flight computer's src/Config.h.");
   Serial.println("  SD is on 14/15/16/7 - a different bus. See SD_Doctor.");
 }
 

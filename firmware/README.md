@@ -1,10 +1,11 @@
 # Firmware
 
-Two Arduino sketches, two boards, one radio link.
+Separate flight computer sketches for vehicles A and B, plus the ground station.
 
 | Sketch | Board | FQBN | Job |
 |---|---|---|---|
-| `MRCC_FlightComputer/` | ESP32-**S3** | `esp32:esp32:esp32s3` | fly the rocket: sensors, filters, flight state, pyro, SD log, and a 2 Hz MRCC downlink |
+| `MRCC_FlightComputer_A/` | ESP32-**S3** | `esp32:esp32:esp32s3` | vehicle A: sensors, filters, flight state, pyro, SD log, and a 2 Hz MRCC downlink |
+| `MRCC_FlightComputer_B/` | ESP32-**S3** | `esp32:esp32:esp32s3` | vehicle B: same flight logic, with B's pins and radio channel |
 | `MRCC_GroundStation/` | classic **ESP32** | `esp32:esp32:esp32` | receive that downlink and print it to USB for the backend |
 | `SD_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only SD card fault finder — no radio, no sensors. Flash it when the card won't mount, then drive it from the serial monitor |
 | `GS_Doctor/` | classic **ESP32** | `esp32:esp32:esp32` | bench-only LoRa link fault finder — the receiver's twin of `SD_Doctor`. Flash it to the ground-station board when packets stop arriving |
@@ -124,21 +125,27 @@ reads this sketch's format string and fails if you don't.
 
 ## Flashing: the one thing you must not get wrong
 
-**Every flash names a vehicle.** Both sketches carry the same block near the top:
+**Open the sketch folder matching the rocket.** Each `.ino` has the same name
+as its folder. The flight computer's vehicle is already set in `src/Config.h`;
+there is no need to edit it when switching rockets. Its boot banner prints
+`MRCC FLIGHT COMPUTER A` or `MRCC FLIGHT COMPUTER B`.
 
-```c
-#define VEHICLE  VEHICLE_A          // <<<< CHANGE ME PER ROCKET
-```
+| Flight computer | `LORA_SCK` | `SD_CS` | `VEHICLE` | Frequency |
+|---|---|---|---|---|
+| `MRCC_FlightComputer_A` | 12 | 7 | `VEHICLE_A` | 433.3 MHz |
+| `MRCC_FlightComputer_B` | 47 | 6 | `VEHICLE_B` | 434.1 MHz |
 
-`VEHICLE_A` → 433.3 MHz  ·  `VEHICLE_B` → 434.1 MHz
+All other settings and flight logic are identical. Continuity sensing stays
+disabled (`PYRO_CONT_ENABLED=0`); B uses GPIO6 for SD chip select.
+Shared flight-code changes must be applied to both copies.
 
-Four boards, two settings, and they pair up:
+Match the receiver channel to the rocket:
 
 | Board | Sketch | Set to |
 |---|---|---|
-| Rocket A (S3) | `MRCC_FlightComputer` | `VEHICLE_A` |
+| Rocket A (S3) | `MRCC_FlightComputer_A` | `VEHICLE_A` |
 | Ground station A (ESP32) | `MRCC_GroundStation` | `VEHICLE_A` |
-| Rocket B (S3) | `MRCC_FlightComputer` | `VEHICLE_B` |
+| Rocket B (S3) | `MRCC_FlightComputer_B` | `VEHICLE_B` |
 | Ground station B (ESP32) | `MRCC_GroundStation` | `VEHICLE_B` |
 
 *One rocket, one letter, both its boards.*
@@ -265,7 +272,8 @@ station set it explicitly. That was luck, not design — it is set on both ends 
 ## Build
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/MRCC_FlightComputer
+arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/MRCC_FlightComputer_A
+arduino-cli compile --fqbn esp32:esp32:esp32s3 firmware/MRCC_FlightComputer_B
 ```
 
 ```bash
@@ -281,7 +289,7 @@ Libraries: `LoRa` (sandeepmistry), plus the flight computer's sensor stack
 
 ## Filter figures (`tools/`)
 
-Host-side only. `tools/replay.cpp` **links `MRCC_FlightComputer/src/Filters.cpp`
+Host-side only. `tools/replay.cpp` **links `MRCC_FlightComputer_A/src/Filters.cpp`
 directly**, so the report's before/after graphs are produced by the same C++ that
 flies — change a cutoff in `Config.h`, re-run, and the figures move with the
 firmware. There is no second implementation to drift.
@@ -300,8 +308,8 @@ replay path).
 `replay`, the demo CSVs, `figures/` — is gitignored: ~4 MB of derived data that
 the one command above regenerates.
 
-**`tools/` must stay a sibling of `MRCC_FlightComputer/`.** The build script
-reaches the firmware through `../MRCC_FlightComputer/src`.
+**`tools/` must stay a sibling of `MRCC_FlightComputer_A/`.** The build script
+reaches the firmware through `../MRCC_FlightComputer_A/src`.
 
 ---
 

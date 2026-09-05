@@ -167,7 +167,7 @@ static void printStatus() {
 void setup() {
   // ---------------------------------------------------
   // NOTHING GOES ABOVE THIS LINE - same rule as
-  // MRCC_FlightComputer.ino. Serial takes 1.5 s to come
+  // MRCC_FlightComputer_A.ino. Serial takes 1.5 s to come
   // up and the gate floats the whole time otherwise.
   //
   // The 10k pulldown at the gate is what actually covers

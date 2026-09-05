@@ -75,7 +75,7 @@ static bool driveTo(int pin, int level) {
 void setup() {
   // ---------------------------------------------------
   // NOTHING GOES ABOVE THIS LINE - same rule as
-  // MRCC_FlightComputer.ino. Serial takes 1.5 s to come
+  // MRCC_FlightComputer_A.ino. Serial takes 1.5 s to come
   // up and the gate floats the whole time otherwise.
   // ---------------------------------------------------
   pinMode(PYRO_GATE_PIN, OUTPUT);
