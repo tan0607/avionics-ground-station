@@ -16,7 +16,7 @@ STRICT_SAFETY = "--strict-safety" in sys.argv
 if STRICT_SAFETY:
     sys.argv.remove("--strict-safety")
 GRAVITY = 9.80665
-LIFTOFF_MS = 20000
+LIFTOFF_MS = 200000
 APOGEE_SECONDS = 2 + 100 / GRAVITY
 
 
@@ -44,7 +44,7 @@ class Timeline:
         self.commands.append(f"SNAP {label}")
         return self
 
-    def fly(self, until=45000, interval=10, noise=0, baro=True,
+    def fly(self, until=225000, interval=10, noise=0, baro=True,
             baro_loss_ms=None, imu=True, reseed_ms=None, freeze_ms=None):
         while self.ms < until:
             ms = min(self.ms + interval, until)
@@ -148,6 +148,23 @@ class EjectionSimulationTest(unittest.TestCase):
                               "commands": len(commands), "events": events})
         return events
 
+    def test_mounted_y_trace_preserves_flight_and_gpio_timing(self):
+        for vehicle in self.binaries:
+            with self.subTest(vehicle=vehicle):
+                timeline = Timeline().hold(LIFTOFF_MS).fly().mark("end")
+                baseline = self.simulate(vehicle, timeline)
+                commands = [timeline.commands[0], "MOUNT y", *timeline.commands[1:]]
+                mounted = self.simulate(vehicle, commands)
+                self.assertEqual(
+                    [(e["kind"], e["ms"], e["state"]) for e in baseline],
+                    [(e["kind"], e["ms"], e["state"]) for e in mounted])
+                end = marked(mounted, "end")
+                self.assertAlmostEqual(end["ay"], GRAVITY, places=4)
+                self.assertEqual(end["az"], 0)
+                self.assertAlmostEqual(end["roll"], 0, places=4)
+                self.assertIn("baro_input", end)
+                self.assertIn("imu_ok", end)
+
     def test_cold_boot_is_safe(self):
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
@@ -159,7 +176,7 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertEqual(end["gate"], 0)
 
     def test_auto_arm_waits_for_boot_timer_and_calibration(self):
-        timeline = Timeline().hold(9990).mark("before")
+        timeline = Timeline().hold(179990).mark("before")
         timeline.hold(LIFTOFF_MS).mark("after")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
@@ -181,7 +198,7 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertEqual(end["rises"], 0)
 
     def test_no_sensors_cannot_arm(self):
-        timeline = Timeline().hold(60000, imu=False, baro=False).mark("end")
+        timeline = Timeline().hold(240000, imu=False, baro=False).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 end = self.simulate(vehicle, timeline)[-1]
@@ -190,7 +207,7 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertEqual(end["rises"], 0)
 
     def test_moving_gyro_cannot_auto_arm(self):
-        timeline = Timeline().hold(60000, gyro=20).mark("end")
+        timeline = Timeline().hold(240000, gyro=20).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 end = self.simulate(vehicle, timeline)[-1]
@@ -201,7 +218,7 @@ class EjectionSimulationTest(unittest.TestCase):
     def test_disarm_blocks_auto_arm_until_reboot(self):
         timeline = Timeline().hold(LIFTOFF_MS)
         timeline.commands.append("DISARM")
-        timeline.hold(60000).mark("end")
+        timeline.hold(240000).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 end = self.simulate(vehicle, timeline)[-1]
@@ -211,7 +228,7 @@ class EjectionSimulationTest(unittest.TestCase):
 
     def test_pressure_change_with_stationary_imu_does_not_launch(self):
         timeline = Timeline().hold(LIFTOFF_MS)
-        timeline.hold(25000, altitude=4100).hold(60000).mark("end")
+        timeline.hold(205000, altitude=4100).hold(240000).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 end = self.simulate(vehicle, timeline)[-1]
@@ -220,8 +237,8 @@ class EjectionSimulationTest(unittest.TestCase):
 
     def test_single_raw_acceleration_spike_is_rejected(self):
         timeline = Timeline().hold(LIFTOFF_MS)
-        timeline.step(20010, accel=10)
-        timeline.hold(60000).mark("end")
+        timeline.step(200010, accel=10)
+        timeline.hold(240000).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 end = self.simulate(vehicle, timeline)[-1]
@@ -250,10 +267,10 @@ class EjectionSimulationTest(unittest.TestCase):
                     self.assertTrue(events[-1]["latch_fired"])
 
     def test_baro_filter_holds_without_new_measurement(self):
-        timeline = Timeline().hold(LIFTOFF_MS).fly(until=28000)
-        timeline.step(28050, altitude=500, accel=0)
+        timeline = Timeline().hold(LIFTOFF_MS).fly(until=208000)
+        timeline.step(208050, altitude=500, accel=0)
         timeline.mark("accepted")
-        timeline.hold(28950, accel=0, fresh_baro=False).mark("held")
+        timeline.hold(208950, accel=0, fresh_baro=False).mark("held")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
@@ -270,14 +287,14 @@ class EjectionSimulationTest(unittest.TestCase):
             with self.subTest(vehicle=vehicle):
                 results = []
                 for loop_ms in (10, 100):
-                    timeline = Timeline().hold(LIFTOFF_MS).fly(until=28000)
+                    timeline = Timeline().hold(LIFTOFF_MS).fly(until=208000)
                     # Align both the last accepted sample and flight service
                     # before varying cadence; fly() may end between services.
                     base_msl = 100 + 100 + 100 * 6 - 0.5 * GRAVITY * 6 * 6
-                    timeline.step(28050, altitude=base_msl + 1, accel=0)
-                    for ms in range(28050 + loop_ms, 31051, loop_ms):
-                        timeline.step(ms, altitude=base_msl + (ms - 28000) * 0.02,
-                                      accel=0, fresh_baro=((ms - 28050) % 100 == 0))
+                    timeline.step(208050, altitude=base_msl + 1, accel=0)
+                    for ms in range(208050 + loop_ms, 211051, loop_ms):
+                        timeline.step(ms, altitude=base_msl + (ms - 208000) * 0.02,
+                                      accel=0, fresh_baro=((ms - 208050) % 100 == 0))
                     results.append(self.simulate(vehicle, timeline.mark("end"))[-1])
                 self.assertEqual(results[0]["baro_samples"], results[1]["baro_samples"])
                 self.assertAlmostEqual(results[0]["alt"], results[1]["alt"], places=4)
@@ -289,13 +306,13 @@ class EjectionSimulationTest(unittest.TestCase):
         for vehicle in self.binaries:
             for keep_servicing in (False, True):
                 with self.subTest(vehicle=vehicle, keep_servicing=keep_servicing):
-                    timeline = Timeline().hold(LIFTOFF_MS).fly(until=28000)
-                    for ms, altitude in ((28050, 400), (28100, 390), (28150, 380)):
+                    timeline = Timeline().hold(LIFTOFF_MS).fly(until=208000)
+                    for ms, altitude in ((208050, 400), (208100, 390), (208150, 380)):
                         timeline.step(ms, altitude=altitude, accel=0)
                     timeline.mark("three")
                     if keep_servicing:
-                        timeline.hold(29600, accel=0, fresh_baro=False)
-                    timeline.step(29650, altitude=370, accel=0)
+                        timeline.hold(209600, accel=0, fresh_baro=False)
+                    timeline.step(209650, altitude=370, accel=0)
                     timeline.mark("resumed")
                     events = self.simulate(vehicle, timeline)
                     self.assertLess(marked(events, "three")["vz"], -2)
@@ -305,11 +322,11 @@ class EjectionSimulationTest(unittest.TestCase):
                     self.assertEqual(resumed["vz"], 0)
 
     def test_baro_stale_measurement_cannot_prime_or_correct_filter(self):
-        timeline = Timeline().hold(LIFTOFF_MS).fly(until=28000)
+        timeline = Timeline().hold(LIFTOFF_MS).fly(until=208000)
         # A sample arrives before the next flight tick, then the loop stalls.
-        timeline.step(28010, altitude=100, accel=0)
+        timeline.step(208010, altitude=100, accel=0)
         timeline.mark("before")
-        timeline.step(29200, accel=0, fresh_baro=False)
+        timeline.step(209200, accel=0, fresh_baro=False)
         timeline.mark("after")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
@@ -322,13 +339,13 @@ class EjectionSimulationTest(unittest.TestCase):
     def test_baro_four_fresh_equal_valued_samples_can_confirm_descent(self):
         # Equal values can be distinct readings. Three readings plus extra
         # service ticks must not fire; the fourth actual reading may confirm.
-        timeline = Timeline().hold(LIFTOFF_MS).fly(until=28000)
-        for ms in (28050, 28100, 28150):
+        timeline = Timeline().hold(LIFTOFF_MS).fly(until=208000)
+        for ms in (208050, 208100, 208150):
             timeline.step(ms, altitude=400, accel=0)
-        timeline.hold(28300, accel=0, fresh_baro=False).mark("three")
-        timeline.step(28350, altitude=400, accel=0)
+        timeline.hold(208300, accel=0, fresh_baro=False).mark("three")
+        timeline.step(208350, altitude=400, accel=0)
         timeline.mark("four")
-        timeline.hold(28800, accel=0, fresh_baro=False).mark("end")
+        timeline.hold(208800, accel=0, fresh_baro=False).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
@@ -344,8 +361,8 @@ class EjectionSimulationTest(unittest.TestCase):
                 with self.subTest(vehicle=vehicle, mode=mode):
                     timeline = Timeline().hold(LIFTOFF_MS, baro=mode != "missing_at_boot")
                     timeline.fly(baro=mode != "missing_at_boot",
-                                 baro_loss_ms=25000 if mode == "lost_in_coast" else None,
-                                 freeze_ms=27000 if mode == "frozen_healthy" else None)
+                                 baro_loss_ms=205000 if mode == "lost_in_coast" else None,
+                                 freeze_ms=207000 if mode == "frozen_healthy" else None)
                     timeline.mark("end")
                     events = self.simulate(vehicle, timeline)
                     rises = events_of(events, "rise")
@@ -357,9 +374,9 @@ class EjectionSimulationTest(unittest.TestCase):
 
     def test_low_altitude_blocks_baro_apogee_but_not_backup(self):
         timeline = Timeline().hold(LIFTOFF_MS)
-        timeline.hold(22000, altitude=105, accel=6)
-        timeline.hold(23000, altitude=110, accel=0)
-        timeline.hold(45000, altitude=100, accel=0).mark("end")
+        timeline.hold(202000, altitude=105, accel=6)
+        timeline.hold(203000, altitude=110, accel=0)
+        timeline.hold(225000, altitude=100, accel=0).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
@@ -367,8 +384,8 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertLess(fire["max_alt"], 30)
                 self.assertEqual(fire["reason"], "TIMER BACKUP")
 
-    def test_baro_only_launch_and_apogee_when_imu_unavailable(self):
-        timeline = Timeline().hold(LIFTOFF_MS, imu=False).fly(imu=False).mark("end")
+    def test_baro_only_launch_after_imu_loss_when_already_armed(self):
+        timeline = Timeline().hold(LIFTOFF_MS).fly(imu=False).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
@@ -378,7 +395,7 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertGreaterEqual(fire["ms"], LIFTOFF_MS + APOGEE_SECONDS * 1000)
 
     def test_reseeded_altitude_step_does_not_cause_early_apogee(self):
-        timeline = Timeline().hold(LIFTOFF_MS).fly(reseed_ms=26000).mark("end")
+        timeline = Timeline().hold(LIFTOFF_MS).fly(reseed_ms=206000).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
@@ -399,20 +416,20 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertEqual(end["fire_count"], 1)
 
     def test_reset_after_completed_pulse_does_not_refire(self):
-        first = Timeline().hold(LIFTOFF_MS).fly(until=34000).mark("reset")
+        first = Timeline().hold(LIFTOFF_MS).fly(until=214000).mark("reset")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 before = self.simulate(vehicle, first)[-1]
                 self.assertTrue(before["fired"])
                 self.assertFalse(before["firing"])
-                second = Timeline(latch=before).hold(40000).mark("end")
+                second = Timeline(latch=before).hold(220000).mark("end")
                 events = self.simulate(vehicle, second)
                 self.assertEqual(events[0]["state"], "DESCENT")
                 self.assertFalse(events[-1]["armed"])
                 self.assertEqual(events[-1]["rises"], 0)
 
     def test_reset_in_coast_recovers_and_uses_live_baro(self):
-        first = Timeline().hold(LIFTOFF_MS).fly(until=28000).mark("reset")
+        first = Timeline().hold(LIFTOFF_MS).fly(until=208000).mark("reset")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 before = self.simulate(vehicle, first)[-1]
@@ -433,8 +450,8 @@ class EjectionSimulationTest(unittest.TestCase):
     def test_without_launch_detection_backup_never_starts(self):
         # Pressure indicates a flight but healthy IMU insists on 1g throughout.
         timeline = Timeline().hold(LIFTOFF_MS)
-        timeline.hold(22000, altitude=150).hold(25000, altitude=300)
-        timeline.hold(30000, altitude=150).hold(65000).mark("end")
+        timeline.hold(202000, altitude=150).hold(205000, altitude=300)
+        timeline.hold(210000, altitude=150).hold(245000).mark("end")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 end = self.simulate(vehicle, timeline)[-1]
@@ -443,7 +460,7 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertEqual(end["rises"], 0)
 
     def test_launch_time_guard_blocks_early_apogee_after_reset(self):
-        latch = {"latch_state": 3, "latch_fired": 0, "latch_launch_ms": 20000}
+        latch = {"latch_state": 3, "latch_fired": 0, "latch_launch_ms": 200000}
         timeline = Timeline(latch=latch)
         while timeline.ms < 6000:
             ms = timeline.ms + 10
@@ -457,11 +474,11 @@ class EjectionSimulationTest(unittest.TestCase):
 
     def test_launch_held_sample_counts_once_until_another_sample_arrives(self):
         timeline = Timeline().hold(LIFTOFF_MS)
-        timeline.hold(20030, accel=6).hold(20100, fresh_imu=False)
-        for ms in (20110, 20160, 20210):
+        timeline.hold(200030, accel=6).hold(200100, fresh_imu=False)
+        for ms in (200110, 200160, 200210):
             timeline.step(ms, accel=6)
-        timeline.hold(20500, fresh_imu=False).mark("four_samples")
-        timeline.step(20510, accel=6)
+        timeline.hold(200500, fresh_imu=False).mark("four_samples")
+        timeline.step(200510, accel=6)
         timeline.mark("fifth_sample")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
@@ -471,36 +488,36 @@ class EjectionSimulationTest(unittest.TestCase):
 
     def test_launch_equal_new_values_keep_original_confirmation_cadence(self):
         timeline = Timeline().hold(LIFTOFF_MS)
-        timeline.hold(20190, accel=6).mark("too_soon")
-        timeline.hold(20260, accel=6).mark("confirmed")
+        timeline.hold(200190, accel=6).mark("too_soon")
+        timeline.hold(200260, accel=6).mark("confirmed")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
                 self.assertEqual(marked(events, "too_soon")["state"], "ARMED")
                 confirmed = marked(events, "confirmed")
                 self.assertEqual(confirmed["state"], "BOOST")
-                self.assertEqual(confirmed["launch_ms"], 20260)
+                self.assertEqual(confirmed["launch_ms"], 200260)
 
     def test_launch_new_low_sample_or_imu_failure_clears_confirmation(self):
         for vehicle in self.binaries:
             for mode in ("low", "down"):
                 with self.subTest(vehicle=vehicle, mode=mode):
-                    timeline = Timeline().hold(LIFTOFF_MS).hold(20210, accel=6)
-                    timeline.hold(20400, accel=1, imu=(mode == "low"))
-                    timeline.hold(20550, accel=6).mark("not_enough_new")
-                    timeline.hold(20700, accel=6).mark("confirmed")
+                    timeline = Timeline().hold(LIFTOFF_MS).hold(200210, accel=6)
+                    timeline.hold(200400, accel=1, imu=(mode == "low"))
+                    timeline.hold(200550, accel=6).mark("not_enough_new")
+                    timeline.hold(200700, accel=6).mark("confirmed")
                     events = self.simulate(vehicle, timeline)
                     self.assertEqual(marked(events, "not_enough_new")["state"], "ARMED")
                     self.assertEqual(marked(events, "confirmed")["state"], "BOOST")
 
     def test_launch_fresh_sample_after_timeout_cannot_finish_old_confirmation(self):
-        timeline = Timeline().hold(LIFTOFF_MS).hold(20210, accel=6)
+        timeline = Timeline().hold(LIFTOFF_MS).hold(200210, accel=6)
         # Four previous confirmations; loop and IMU pause > existing 2 s timeout.
         # A fresh sample is already present when service resumes, imuOK still true.
-        timeline.step(22420, accel=6)
+        timeline.step(202420, accel=6)
         timeline.mark("resumed")
-        timeline.hold(22610, fresh_imu=False).mark("held")
-        timeline.hold(22850, accel=6).mark("confirmed")
+        timeline.hold(202610, fresh_imu=False).mark("held")
+        timeline.hold(202850, accel=6).mark("confirmed")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
@@ -509,10 +526,10 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertEqual(marked(events, "confirmed")["state"], "BOOST")
 
     def test_launch_unconsumed_but_expired_sample_is_not_confirmation(self):
-        timeline = Timeline().hold(LIFTOFF_MS).hold(20030, accel=6)
-        timeline.step(22140, fresh_imu=False)
-        timeline.hold(22340, accel=6).mark("four_new")
-        timeline.hold(22390, accel=6).mark("five_new")
+        timeline = Timeline().hold(LIFTOFF_MS).hold(200030, accel=6)
+        timeline.step(202140, fresh_imu=False)
+        timeline.hold(202340, accel=6).mark("four_new")
+        timeline.hold(202390, accel=6).mark("five_new")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
@@ -520,9 +537,9 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertEqual(marked(events, "five_new")["state"], "BOOST")
 
     def test_launch_baro_corroboration_requires_new_imu_evidence(self):
-        timeline = Timeline().hold(LIFTOFF_MS).hold(20030, accel=6)
-        timeline.hold(20500, altitude=140, fresh_imu=False).mark("held_imu")
-        timeline.hold(20600, altitude=145, accel=2).mark("new_imu")
+        timeline = Timeline().hold(LIFTOFF_MS).hold(200030, accel=6)
+        timeline.hold(200500, altitude=140, fresh_imu=False).mark("held_imu")
+        timeline.hold(200600, altitude=145, accel=2).mark("new_imu")
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 events = self.simulate(vehicle, timeline)
@@ -534,7 +551,9 @@ class EjectionSimulationTest(unittest.TestCase):
 # as ordinary failing assertions; only reproduced limitations are subsequently
 # marked expectedFailure. They must not be mistaken for passing safety checks.
 def full_observed_settle_window(self, vehicle):
-    timeline = Timeline().hold(11490).mark("before_ten_seconds_of_samples")
+    timeline = Timeline()
+    timeline.step(171000)  # first observed sample, not boot time
+    timeline.hold(180990).mark("before_ten_seconds_of_samples")
     end = self.simulate(vehicle, timeline)[-1]
     self.assertEqual(end["state"], "PAD",
                      "Auto-arm counted boot time before the first observed still sample")
@@ -542,11 +561,11 @@ def full_observed_settle_window(self, vehicle):
 
 def fresh_samples_required_for_launch(self, vehicle):
     timeline = Timeline().hold(LIFTOFF_MS).mark("before")
-    timeline.step(20010, accel=6)
-    timeline.step(20020, accel=6)
-    timeline.step(20030, accel=6)
-    timeline.hold(20500, fresh_imu=False).mark("stale")
-    timeline.hold(45000, imu=False, baro=False).mark("end")
+    timeline.step(200010, accel=6)
+    timeline.step(200020, accel=6)
+    timeline.step(200030, accel=6)
+    timeline.hold(200500, fresh_imu=False).mark("stale")
+    timeline.hold(225000, imu=False, baro=False).mark("end")
     events = self.simulate(vehicle, timeline)
     self.assertEqual(marked(events, "stale")["state"], "ARMED",
                      "A held filtered acceleration was counted as multiple launch confirmations")
@@ -554,10 +573,10 @@ def fresh_samples_required_for_launch(self, vehicle):
 
 
 def fresh_samples_required_for_apogee(self, vehicle):
-    timeline = Timeline().hold(LIFTOFF_MS).fly(until=28000).mark("before")
+    timeline = Timeline().hold(LIFTOFF_MS).fly(until=208000).mark("before")
     height_at_8s = 100 + 100 * 6 - 0.5 * GRAVITY * 6 * 6
-    timeline.step(28050, altitude=100 + height_at_8s - 20, accel=0)
-    timeline.hold(28950, accel=0, fresh_baro=False).mark("stale")
+    timeline.step(208050, altitude=100 + height_at_8s - 20, accel=0)
+    timeline.hold(208950, accel=0, fresh_baro=False).mark("stale")
     events = self.simulate(vehicle, timeline)
     self.assertEqual(events[-1]["rises"], 0,
                      "One accepted pressure drop was reused until apogee fired during ascent")
@@ -579,12 +598,12 @@ def pulse_remains_bounded_during_loop_stall(self, vehicle):
 
 
 def reset_preserves_original_backup_deadline(self, vehicle):
-    first = Timeline().hold(LIFTOFF_MS).fly(until=30000, baro_loss_ms=25000).mark("reset")
+    first = Timeline().hold(LIFTOFF_MS).fly(until=210000, baro_loss_ms=205000).mark("reset")
     before = self.simulate(vehicle, first)[-1]
     self.assertEqual(before["state"], "COAST")
     second = Timeline(latch=before).hold(23000, baro=False, accel=0).mark("end")
     fire, = events_of(self.simulate(vehicle, second), "rise")
-    total_since_launch = 30000 - before["launch_ms"] + fire["ms"]
+    total_since_launch = 210000 - before["launch_ms"] + fire["ms"]
     self.assertLessEqual(total_since_launch, 19100,
                          f"Reset restarted backup; fired {total_since_launch} ms after original launch")
 
@@ -596,7 +615,7 @@ def reset_during_pulse_does_not_silently_lose_remaining_output(self, vehicle):
     before = self.simulate(vehicle, first)[-1]
     self.assertEqual(before["gate"], 1)
     self.assertTrue(before["latch_fired"])
-    second = Timeline(latch=before).hold(40000).mark("end")
+    second = Timeline(latch=before).hold(220000).mark("end")
     events = self.simulate(vehicle, second)
     # Deliberately expose the tradeoff; this is not a prescription to refire.
     # No physical ignition/energy assumption is made from a 10 ms GPIO pulse.
@@ -617,7 +636,7 @@ for _name, _check in (
     for _vehicle in ("A", "B"):
         def _test(self, check=_check, vehicle=_vehicle):
             check(self, vehicle)
-        if not STRICT_SAFETY and _name not in ("fresh_launch_samples", "fresh_apogee_samples"):
+        if not STRICT_SAFETY and _name not in ("full_observed_settle_window", "fresh_launch_samples", "fresh_apogee_samples"):
             _test = unittest.expectedFailure(_test)
         setattr(EjectionSimulationTest, f"test_safety_{_name}_{_vehicle}", _test)
 

@@ -341,34 +341,19 @@ const unsigned long FLIGHT_INTERVAL = 50;   // 20 Hz, same as baro
 const float         PAD_ACCEL_TOL  = 0.5;    // m/s2 away from 9.81
 const float         PAD_GYRO_TOL   = 5.0;    // deg/s
 const unsigned long PAD_STILL_TIME = 10000;  // must be still this long
+const unsigned long AUTO_ARM_DELAY = 180000; // minimum uptime before prelaunch arm
+// PAD/calibration only: a missing 250 ms run breaks observed stillness.
+// Flight launch freshness and thresholds remain unchanged.
+const unsigned long PAD_IMU_MAX_GAP = 250;
 
 // ---- auto arm ----
 //
-// The board arms itself once it has been sitting still
-// for PAD_STILL_TIME, instead of waiting for the serial
-// A key.
-//
-// Why: the A key means a laptop at the pad, and on this
-// vehicle the USB port is also the supply - unplugging
-// it resets the board, and a reset lands back in PAD,
-// DISARMED, without saying so. An operator who armed and
-// walked away would fly an unarmed rocket, and an
-// unarmed rocket is not a late deployment, it is no
-// deployment at all: FS_PAD has no launch detector, so
-// the machine sleeps through the whole flight.
-//
-// This does not delete a safety layer, it moves it into
-// hardware. The switch in the pyro battery line is what
-// actually stands between the battery and the match, and
-// it is the last thing thrown before walking away. Auto
-// arm only makes the firmware ready before that switch
-// is closed; with it open the charge cannot fire
-// whatever state the machine is in.
-//
-// Nothing is bypassed. It calls the same armFlight() the
-// A key does, so the stillness window, the gyro-zero
-// gate, the sensor-health gate and the fired latch all
-// still apply. Set to 0 to go back to A only.
+// Normal prelaunch arming requires minimum boot uptime AND a full observed
+// stationary IMU window AND completed gyro calibration. No IMU means no
+// prelaunch arm; barometer fallback remains available AFTER arming.
+// A software delay is only an operator buffer, not physical isolation.
+// Actual MOSFET wiring / power isolation must be verified on the hardware.
+// PAD has no launch detector: confirm received ARMED before launching.
 #define AUTO_ARM_ENABLED 1
 
 // Retry interval after a refusal. Slow on purpose - the

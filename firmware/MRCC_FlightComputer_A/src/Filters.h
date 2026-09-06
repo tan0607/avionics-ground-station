@@ -32,18 +32,20 @@
 // the same inputs, purely as a comparison baseline.
 //
 // MOUNTING - THIS MATTERS.
-// Roll and pitch are taken about X and Y with Z as the
-// reference axis:
-//     roll  = atan2(ay, az)
+// Both A and B: IMU +Y points out through the rocket nose.
+// Attitude uses a right-handed frame with:
+//     X = sensor +X, Y = sensor -Z, Z = sensor +Y (nose)
+// Roll and pitch retain the existing Euler convention:
+// about attitude X and Y, with attitude Z as the reference.
+// In sensor coordinates:
+//     roll  = atan2(-az, ay)
 //     pitch = atan2(-ax, hypot(ay, az))
-// So mount the board with +Z pointing UP THE AIRFRAME,
-// out through the nose. Sitting on the pad then reads
-// roll 0, pitch 0.
+// Nose upright on the pad then reads roll 0, pitch 0.
+// Gyro inputs are gx and -gz; heading uses the same mounting.
+// Raw/filtered sensor vectors and calibration stay in sensor axes.
 //
-// If X is put along the airframe instead, the rocket
-// sits at pitch -90 on the pad, which is exactly the
-// singularity of that formula, and the numbers will be
-// useless before it has even left the rail.
+// These are tilt Euler angles, not axial rocket roll/yaw.
+// The existing Euler singularity at pitch +/-90 remains.
 //
 // NOTHING HERE BLOCKS. Gyro calibration collects its
 // samples across normal loop iterations.

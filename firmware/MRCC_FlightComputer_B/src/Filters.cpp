@@ -32,6 +32,7 @@ static uint8_t       calState = CAL_IDLE;
 static int           calCount = 0;
 static float         calSumX = 0, calSumY = 0, calSumZ = 0;
 static unsigned long calStart = 0;
+static unsigned long lastCalSample = 0;
 
 #if FILTER_ENABLED
 static void runGyroCal(float rx, float ry, float rz);
@@ -203,6 +204,7 @@ void startGyroCal() {
   calSumY  = 0.0;
   calSumZ  = 0.0;
   calStart = millis();
+  lastCalSample = 0;
 
   gyroCalDone = false;
 
@@ -229,8 +231,14 @@ bool gyroCalibrating() {
 #if FILTER_ENABLED
 static void runGyroCal(float rx, float ry, float rz) {
   if (calState != CAL_COLLECTING) return;
+  if (lastCalSample != 0 && millis() - lastCalSample > PAD_IMU_MAX_GAP) {
+    calCount = 0;
+    calSumX = calSumY = calSumZ = 0.0;
+  }
+  lastCalSample = millis();
 
-  bool moving = (fabs(rx) > GYRO_CAL_MAX_RATE ||
+  bool moving = (!isfinite(rx) || !isfinite(ry) || !isfinite(rz) ||
+                 fabs(rx) > GYRO_CAL_MAX_RATE ||
                  fabs(ry) > GYRO_CAL_MAX_RATE ||
                  fabs(rz) > GYRO_CAL_MAX_RATE);
 
@@ -249,7 +257,7 @@ static void runGyroCal(float rx, float ry, float rz) {
       gyroBiasZ = 0.0;
 
       Serial.println("[FILT] Gyro cal GAVE UP - never held still.");
-      Serial.println("[FILT] Bias left at zero. Send K to retry.");
+      Serial.println("[FILT] Bias left at zero. Unarmed PAD retries automatically.");
     }
     return;
   }
@@ -306,8 +314,16 @@ void filterUpdate() {
   float axyz = sqrt(ax * ax + ay * ay + az * az);
   accelNormRaw = axyz;
 
-  rollAcc  = atan2(ay, az) * RAD_TO_DEG;
+  // Mounted attitude frame: (X, Y, Z) = (sensor X, -sensor Z, sensor Y).
+  // Both vehicles have +Y toward the nose. Keep logged sensor vectors intact.
+  rollAcc  = atan2(-az, ay) * RAD_TO_DEG;
   pitchAcc = atan2(-ax, sqrt(ay * ay + az * az)) * RAD_TO_DEG;
+
+  // AK09916 -> accelerometer frame (my, mx, -mz), then mounted frame
+  // (my, mz, mx). Uncompensated baseline in the same frame as headingFilt.
+  heading = atan2(mz, my) * RAD_TO_DEG;
+  if (heading < 0)       heading += 360.0;
+  if (heading >= 360.0)  heading -= 360.0;
 
 #if !FILTER_ENABLED
   // A/B switch for the report: with this off the filtered
@@ -362,7 +378,7 @@ void filterUpdate() {
   // Angle from the low passed accelerometer. Logged on its
   // own so the report can separate what the low pass did
   // from what the sensor fusion did.
-  rollLpf  = atan2(fay, faz) * RAD_TO_DEG;
+  rollLpf  = atan2(-faz, fay) * RAD_TO_DEG;
   pitchLpf = atan2(-fax, sqrt(fay * fay + faz * faz)) * RAD_TO_DEG;
 
   // ---- STAGE 5: is the accelerometer telling the truth? ----
@@ -378,7 +394,7 @@ void filterUpdate() {
   // Predict every sample from the gyro. Correct only when
   // the gate above says the accelerometer is trustworthy.
   kalmanPredict(kRoll,  fgx, dt);
-  kalmanPredict(kPitch, fgy, dt);
+  kalmanPredict(kPitch, -fgz, dt);
 
   if (accelTrusted) {
     // Roll wraps at +-180. A wrap is not a 360 deg/s
@@ -403,7 +419,7 @@ void filterUpdate() {
   float alpha = COMP_TAU / (COMP_TAU + dt);
 
   rollComp  += fgx * dt;
-  pitchComp += fgy * dt;
+  pitchComp += -fgz * dt;
 
   if (accelTrusted) {
     if (fabs(rollLpf - rollComp) > 90.0) {
@@ -424,8 +440,8 @@ void filterUpdate() {
 // =====================================================
 // HEADING
 //
-// The raw heading in Sensors.cpp is atan2(my,mx), which
-// is only correct if the board is dead level. Tilt it
+// The raw heading above is atan2(mz,my), in the mounted
+// frame, and is only correct with the nose upright. Tilt it
 // and the number swings by tens of degrees.
 //
 // This version rotates the magnetometer back to level
@@ -434,8 +450,9 @@ void filterUpdate() {
 // NOTE: the AK09916 inside the ICM20948 does not share
 // axes with the accelerometer and gyro. Mag X is accel
 // Y, mag Y is accel X, mag Z is inverted. That swap is
-// done here, not in the logged channels, so MX/MY/MZ and
-// FMX/FMY/FMZ stay directly comparable.
+// followed by the +Y-nose mounting rotation here, not in
+// the logged channels, so MX/MY/MZ and FMX/FMY/FMZ stay
+// directly comparable.
 //
 // This is still an UNCALIBRATED heading. Hard and soft
 // iron correction is a separate job - treat it as a
@@ -444,10 +461,10 @@ void filterUpdate() {
 
 #if FILTER_ENABLED
 static void updateHeadingTiltCompensated() {
-  // Magnetometer into the accelerometer frame
+  // Magnetometer -> accelerometer frame -> mounted attitude frame
   float bx =  fmy;
-  float by =  fmx;
-  float bz = -fmz;
+  float by =  fmz;
+  float bz =  fmx;
 
   float r = rollKal  * DEG_TO_RAD;
   float p = pitchKal * DEG_TO_RAD;

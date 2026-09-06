@@ -30,6 +30,7 @@ import { KpiRow } from "@/components/KpiRow"
 import { AltitudeChart } from "@/components/AltitudeChart"
 import { SensorChart, SensorLegend, type SensorTrace } from "@/components/SensorChart"
 import { GoNoGo } from "@/components/GoNoGo"
+import { ArmingStatus } from "@/components/ArmingStatus"
 import { SubsystemHealth } from "@/components/SubsystemHealth"
 import { AuxReadouts } from "@/components/AuxReadouts"
 import { FlightTimeline } from "@/components/FlightTimeline"
@@ -188,6 +189,9 @@ function App() {
           <>
             <KpiRow frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
             <AuxReadouts frame={telemetry.frame} />
+            <div className="shrink-0 px-2 pt-2">
+              <ArmingStatus key={mission.mission.name} frame={telemetry.frame} link={telemetry.link} />
+            </div>
 
             <main className="grid min-h-0 flex-1 grid-cols-[1fr_17rem] gap-2 p-2">
               {/* sensor-chart column */}

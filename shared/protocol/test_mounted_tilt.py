@@ -44,11 +44,17 @@ class MountedTiltTest(unittest.TestCase):
         frames = list(mrcc.MrccParser().feed(
             packet + b"### GS CHANNEL=B\n" + packet +
             b"### GS CHANNEL=A\n" + packet))
-        self.assertEqual([f.telemetry.tilt_deg for f in frames], [90, 0, 90])
+        self.assertEqual([f.telemetry.tilt_deg for f in frames], [90, 0, 0])
+
+    def test_a_tilt_reaches_dashboard_and_csv_without_remapping_raw_axes(self):
+        self._check_tilt_recording("A")
 
     def test_b_tilt_reaches_dashboard_and_csv_without_remapping_raw_axes(self):
+        self._check_tilt_recording("B")
+
+    def _check_tilt_recording(self, channel):
         frame, = mrcc.MrccParser().feed(
-            b"### GS CHANNEL=B\nMRCC,PKT=1,AX=-0.16,AY=9.63,AZ=0.48,ST=PAD\n")
+            f"### GS CHANNEL={channel}\nMRCC,PKT=1,AX=-0.16,AY=9.63,AZ=0.48,ST=PAD\n".encode())
         t, mf, known, fknown = split_frame(frame)
         wire = telemetry_to_wire(t, 1700000000000, health_known=known,
                                  flags_known=fknown, extra=mf.extra)

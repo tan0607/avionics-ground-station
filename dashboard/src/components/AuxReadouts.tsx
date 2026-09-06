@@ -65,7 +65,8 @@ const KNOWN: Record<string, { label: string; unit: string; digits: number }> = {
  * and rendered as the SD row's state instead (useOnboardLog).
  */
 const ORDER = ["P", "MX", "HDG", "COURSE", "GSPEED", "AZ", "AX", "AY", "GX", "GY", "GZ", "VX", "VY", "TEMP"]
-const HIDDEN = new Set(["GPSDATA", "SD", "BA", "IM", "AR", "FI", "SDF", "SDL", "SDE"])
+// Arming gates have a dedicated decoded readout, not three unexplained numbers.
+const HIDDEN = new Set(["GPSDATA", "SD", "BA", "IM", "AR", "FI", "SDF", "SDL", "SDE", "AW", "AD", "AS"])
 
 function orderedKeys(extra: Record<string, number>): string[] {
   const present = Object.keys(extra).filter((k) => !HIDDEN.has(k))

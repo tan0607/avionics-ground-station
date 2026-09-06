@@ -24,6 +24,9 @@ bool timerBackupUsed = false;
 
 static unsigned long lastFlightTick = 0;
 static unsigned long stillSince     = 0;
+static unsigned long lastStillImuUpdate = 0;
+static bool stillWindowActive = false;
+static bool bootDelayComplete = false;
 static unsigned long burnoutSince   = 0;
 static unsigned long landRefTime    = 0;
 static unsigned long padSince       = 0;
@@ -92,7 +95,9 @@ const char* stateName(uint8_t s) {
 // live state machine behind them.
 static void announceAutoArm() {
 #if AUTO_ARM_ENABLED
-  Serial.print("[FLIGHT] AUTO-ARM is ON - arms itself after ");
+  Serial.print("[FLIGHT] AUTO-ARM is ON - minimum boot wait ");
+  Serial.print(AUTO_ARM_DELAY / 1000);
+  Serial.print(" s AND ");
   Serial.print(PAD_STILL_TIME / 1000);
   Serial.println(" s of stillness");
   Serial.println("[FLIGHT] X disarms it until the next power cycle");
@@ -105,6 +110,9 @@ static void announceAutoArm() {
 void initFlight(bool verbose) {
   flightState = FS_PAD;
   padSince    = millis();
+  stillWindowActive = false;
+  lastStillImuUpdate = 0;
+  bootDelayComplete = millis() >= AUTO_ARM_DELAY;
 
   if (!latchValid()) {
     if (verbose) {
@@ -176,6 +184,31 @@ static void enterState(uint8_t s) {
 // ARM / DISARM
 // =====================================================
 
+ArmReadiness armReadiness() {
+  if (flightState != FS_PAD) return {0, 0, 0};
+  const unsigned long now = millis();
+  const bool imuUsable = imuOK && lastImuUpdate != 0 &&
+    now - lastImuUpdate <= PAD_IMU_MAX_GAP &&
+    isfinite(accelMag) && isfinite(gyroMag);
+  const unsigned long delayLeft = bootDelayComplete || now >= AUTO_ARM_DELAY
+    ? 0 : AUTO_ARM_DELAY - now;
+  // Advance only to the last OBSERVED sample, never along a held value.
+  const unsigned long observed = imuUsable && stillWindowActive
+    ? lastStillImuUpdate - stillSince : 0;
+  const unsigned long stillLeft = observed >= PAD_STILL_TIME ? 0 : PAD_STILL_TIME - observed;
+  uint8_t wait = 0;
+  if (delayLeft) wait |= ARM_WAIT_DELAY;
+  if (stillLeft) wait |= ARM_WAIT_STILL;
+  if (!gyroCalDone) wait |= ARM_WAIT_CAL;
+  if (!imuUsable) wait |= ARM_WAIT_IMU;
+  if (autoArmBlocked) wait |= ARM_WAIT_BLOCKED;
+  if (!AUTO_ARM_ENABLED) wait |= ARM_WAIT_DISABLED;
+  if (pyroFired) wait |= ARM_WAIT_FIRED;
+  if (!armSwitchClosed() || (PYRO_CONT_ENABLED && !contOK))
+    wait |= ARM_WAIT_INTERLOCK;
+  return {wait, delayLeft, stillLeft};
+}
+
 bool armFlight() {
   if (flightState != FS_PAD) {
     Serial.print("[FLIGHT] ARM REFUSED - state is ");
@@ -183,27 +216,11 @@ bool armFlight() {
     return false;
   }
 
-  if (!imuOK && !baroOK) {
-    Serial.println("[FLIGHT] ARM REFUSED - no IMU and no baro");
+  if (armReadiness().wait & ~ARM_WAIT_DISABLED) {
+    printArmReadiness();
     return false;
   }
 
-  if (imuOK && (millis() - stillSince < PAD_STILL_TIME)) {
-    Serial.print("[FLIGHT] ARM REFUSED - not settled, need ");
-    Serial.print((PAD_STILL_TIME - (millis() - stillSince)) / 1000.0, 1);
-    Serial.println(" s more of stillness");
-
-    // An uncalibrated gyro bias sits in gyroMag forever
-    // and would look exactly like a rocket that never
-    // stops moving. Say so rather than let someone stand
-    // at the pad pressing A.
-    if (!gyroCalDone) {
-      Serial.print("[FLIGHT] Gyro is NOT zeroed (|g|=");
-      Serial.print(gyroMag, 1);
-      Serial.println(" deg/s) - run K with the board still");
-    }
-    return false;
-  }
 
   if (!armPyro()) return false;
 
@@ -267,13 +284,9 @@ void disarmFlight() {
 // only supplies the keystroke nobody is at the pad to
 // press.
 //
-// The settled test is split because the stillness window
-// is an IMU measurement. With the IMU down stillSince is
-// re-stamped every tick and PAD_STILL_TIME can never be
-// met, so a baro-only vehicle would sit in PAD for the
-// whole flight. That vehicle is still flyable - FS_ARMED
-// carries a baro launch detector for exactly this case -
-// so fall back to a fixed settle measured from boot.
+// A failed IMU cannot prove stillness and therefore cannot auto-arm.
+// Readiness is shared with telemetry; zero blockers is not an ACK.
+// Gyro calibration retries only in unarmed PAD after a timeout.
 //
 // Testing settled BEFORE calling armFlight() is what keeps
 // the log readable: the ordinary "not settled yet" refusal
@@ -296,12 +309,13 @@ void printArmReadiness() {
   Serial.print(pyroFired ? "YES" : "NO");
   Serial.print(" | gyro_cal=");
   Serial.print(gyroCalDone ? "DONE" : "PENDING");
-  // Report the existing timer, including the baro-only boot-time fallback.
-  // This function must not reset or otherwise influence that timer.
-  Serial.print(imuOK ? " | still_timer=" : " | baro_boot_timer=");
-  Serial.print((millis() - (imuOK ? stillSince : padSince)) / 1000.0, 2);
-  Serial.print("/");
-  Serial.print(PAD_STILL_TIME / 1000.0, 2);
+  const ArmReadiness ready = armReadiness();
+  Serial.print(" | boot_wait_remaining=");
+  Serial.print(ready.delayRemainingMs / 1000.0, 2);
+  Serial.print("s | still_remaining=");
+  Serial.print(ready.stillRemainingMs / 1000.0, 2);
+  Serial.print("s | wait_mask=");
+  Serial.print(ready.wait);
   Serial.print("s | last_reset=");
   Serial.print(padResetReason);
   if (padResetTime != 0) {
@@ -326,7 +340,7 @@ static void reportAutoArmStuck() {
   printArmReadiness();
 
   if (!imuOK) {
-    Serial.println("[FLIGHT] IMU is DOWN - waiting on the baro settle instead.");
+    Serial.println("[FLIGHT] IMU is DOWN - auto-arm inhibited; no baro-only arming.");
     if (!baroOK) {
       Serial.println("[FLIGHT] Baro is DOWN too. NOTHING can arm this board.");
     }
@@ -334,7 +348,7 @@ static void reportAutoArmStuck() {
   }
 
   if (!gyroCalDone) {
-    Serial.println("[FLIGHT] Gyro is NOT zeroed - hold the board still, or run K.");
+    Serial.println("[FLIGHT] Gyro is NOT zeroed - hold still; calibration retries in PAD.");
   }
 
   Serial.print("[FLIGHT] |a| = ");
@@ -361,12 +375,11 @@ static void tryAutoArm() {
   if (autoArmBlocked || pyroFired)                  return;
   if (millis() - lastAutoArmTry < AUTO_ARM_RETRY)   return;
 
-  bool settled = imuOK
-               ? (gyroCalDone && millis() - stillSince >= PAD_STILL_TIME)
-               : (baroOK      && millis() - padSince   >= PAD_STILL_TIME);
+  bool settled = armReadiness().wait == 0;
 
   if (!settled) {
-    if (millis() - padSince        >= AUTO_ARM_STUCK_AFTER &&
+    if (bootDelayComplete &&
+        millis() - padSince        >= AUTO_ARM_STUCK_AFTER &&
         millis() - lastStuckReport >= AUTO_ARM_STUCK_AFTER) {
       lastStuckReport = millis();
       reportAutoArmStuck();
@@ -558,20 +571,40 @@ void serviceFlight() {
     // PAD - track stillness and the ground reference
     // -------------------------------------------------
     case FS_PAD: {
-      bool still = imuOK &&
+      if (millis() >= AUTO_ARM_DELAY) bootDelayComplete = true;
+      const bool usable = imuOK && lastImuUpdate != 0 &&
+        millis() - lastImuUpdate <= PAD_IMU_MAX_GAP &&
+        isfinite(accelMag) && isfinite(gyroMag);
+      const bool newImu = usable && lastImuUpdate != lastStillImuUpdate;
+      const bool gap = newImu && lastStillImuUpdate != 0 &&
+        lastImuUpdate - lastStillImuUpdate > PAD_IMU_MAX_GAP;
+      bool still = usable &&
                    fabs(accelMag - GRAVITY) < PAD_ACCEL_TOL &&
                    gyroMag < PAD_GYRO_TOL;
 
-      if (!still) {
+      if (!still || gap) {
+        stillWindowActive = false;
         stillSince = millis();
         padResetTime = stillSince;
         padResetAccel = accelMag;
         padResetGyro = gyroMag;
         const bool accelRejected = !(fabs(accelMag - GRAVITY) < PAD_ACCEL_TOL);
         const bool gyroRejected = !(gyroMag < PAD_GYRO_TOL);
-        padResetReason = !imuOK ? "IMU_DOWN" :
+        padResetReason = !usable ? "IMU_DOWN_OR_STALE" : gap ? "IMU_GAP" :
                          accelRejected && gyroRejected ? "ACCEL+GYRO" :
                          accelRejected ? "ACCEL" : "GYRO";
+      }
+      if (newImu) {
+        lastStillImuUpdate = lastImuUpdate;
+        if (still && !stillWindowActive) {
+          stillSince = lastImuUpdate;
+          stillWindowActive = true;
+        }
+        // No calibration restart once armed/in flight. A timeout during
+        // installation must not permanently strand an unattended vehicle.
+        if (!pyroArmed && !autoArmBlocked && !gyroCalDone && !gyroCalibrating()) {
+          startGyroCal();
+        }
       }
 
       // Slowly follow the weather while we sit there.

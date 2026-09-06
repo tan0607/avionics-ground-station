@@ -47,5 +47,18 @@ void initFlight(bool verbose);
 void serviceFlight();
 void printArmReadiness(); // read-only PAD timer and last rejected sample
 
+// AW telemetry bitmask. Zero means gates satisfied, NOT an arming acknowledgement.
+enum ArmWait : uint8_t {
+  ARM_WAIT_DELAY = 1, ARM_WAIT_STILL = 2, ARM_WAIT_CAL = 4,
+  ARM_WAIT_IMU = 8, ARM_WAIT_BLOCKED = 16, ARM_WAIT_DISABLED = 32,
+  ARM_WAIT_FIRED = 64, ARM_WAIT_INTERLOCK = 128
+};
+struct ArmReadiness {
+  uint8_t wait;
+  unsigned long delayRemainingMs;
+  unsigned long stillRemainingMs;
+};
+ArmReadiness armReadiness();
+
 bool armFlight();
 void disarmFlight();

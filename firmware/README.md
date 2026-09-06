@@ -2,6 +2,67 @@
 
 Separate flight computer sketches for vehicles A and B, plus the ground station.
 
+### A/B auto-arm and dashboard countdown (2026-09-07)
+
+Normal prelaunch arming requires all three: **180 s of boot uptime**, **the
+latest 10 s of observed still IMU data**, and **completed gyro calibration**.
+The two clocks run concurrently, not 180 + 10 s in sequence. Stillness retains
+the existing limits: acceleration magnitude within 0.5 m/s² of gravity and gyro
+magnitude below 5°/s. A missing/stale IMU cannot auto-arm, even with a healthy
+barometer. Fresh, equal-valued samples count; repeatedly reusing one sample does
+not advance the stillness timer. A gap over 250 ms breaks the PAD observation
+window and any partially collected gyro-calibration batch.
+
+Failed gyro calibration retries only in unarmed PAD, without a console command.
+`X` blocks auto-arm until reboot; the manual `A` path does not bypass the delay,
+IMU, calibration or operator-block gates. A prelaunch reboot restarts the boot
+delay. In-flight reset recovery and post-arming launch/ejection logic are
+unchanged. **PAD does not detect launch: confirm ARMED before launching.**
+
+The Live dashboard's arming strip uses the onboard report, not a browser timer.
+It shows the earliest remaining time and blocking reasons. `ARMED confirmed`
+requires received ARMED state and an armed flag; zero seconds alone never means
+armed. A stale link or non-advancing onboard timestamp suspends the display after
+the existing 3 s freshness window. Missing/invalid fields show countdown
+unavailable (including older firmware). Confirmation is visual; no new audible
+alert or hardware buzzer is implemented.
+
+PAD packets append `AW` (blocker bitmask), `AD` (boot-delay seconds remaining),
+and `AS` (stillness seconds remaining), rounded **up** to whole seconds. AW bits:
+1 delay, 2 stillness, 4 gyro calibration, 8 unavailable/stale IMU, 16 operator
+block, 32 auto-arm disabled, 64 fired latch, 128 arming interlock. The three-field
+block is all-or-none within 255 bytes and has priority over optional SDF/SDL/SDE
+while in PAD; core flight/health fields retain their original precision. The
+backend forwards it and records `aux_aw`, `aux_ad`, `aux_as`. Do not latch an old
+countdown across a packet that omits it.
+
+This is a software waiting window, not proof assembly is complete or a substitute
+for verified hardware isolation. Firmware must be flashed and bench-validated
+separately; a build or host simulation is not flight readiness. See
+`docs/validation/2026-09-07-auto-arm-countdown.md` for evidence and remaining
+reset/pulse safety findings.
+
+### Confirmed A/B installation (2026-09-06)
+
+Both flight computers mount with **IMU +Y toward the rocket nose**. Attitude
+coordinates are `(X, Y, Z) = (sensor +X, sensor -Z, sensor +Y)`; upright and
+stationary means roll/pitch near zero. These retain the existing Euler tilt
+convention, rather than naming rotation about the nose "roll". Gyro prediction
+and magnetometer heading use the same frame. Raw and filtered sensor-axis
+vectors remain unchanged in telemetry and SD logs.
+
+The ground station uses +Y for tilt on both receiver-confirmed A and B channels;
+an input without channel context retains the legacy +Z fallback. Raw heading is
+now the mounted-frame uncompensated baseline, so heading and angle logs from
+older firmware use a different reference. Replaying old raw telemetry applies
+the current channel mounting to tilt; saved CSV files are not rewritten.
+
+This is an installation-coordinate correction. The existing two-angle filter,
+Euler singularity and uncalibrated magnetic heading limitations remain. It does
+not change flight-state or pyro conditions. Flash each matching A/B sketch and
+reload the backend before expecting these source changes in live readings;
+verify the mounted hardware separately from host tests.
+
 | Sketch | Board | FQBN | Job |
 |---|---|---|---|
 | `MRCC_FlightComputer_A/` | ESP32-**S3** | `esp32:esp32:esp32s3` | vehicle A: sensors, filters, flight state, pyro, SD log, and a 2 Hz MRCC downlink |

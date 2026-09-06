@@ -173,6 +173,24 @@ static void buildTelemetryPacket() {
     sdOK ? 1 : 0, baroOK ? 1 : 0, imuOK ? 1 : 0
   );
 
+  // Prelaunch readiness, computed by the same gates that decide arming.
+  // AW=blocker bits, AD=boot-delay seconds, AS=observed-stillness seconds.
+  // Ceil remaining time; AW=0 is NOT an arming acknowledgement (ST/AR are).
+  // All-or-none append preserves flight/health fields at the LoRa byte limit.
+  // Give this block priority over the sparse recorder details while in PAD.
+  if (flightState == FS_PAD) {
+    const ArmReadiness ready = armReadiness();
+    char block[40];
+    int n = snprintf(block, sizeof(block), ",AW=%u,AD=%lu,AS=%lu",
+                     (unsigned int) ready.wait,
+                     (ready.delayRemainingMs + 999) / 1000,
+                     (ready.stillRemainingMs + 999) / 1000);
+    size_t used = strlen(txPacket);
+    if (n > 0 && n < (int) sizeof(block) && used + n <= TX_PAYLOAD_MAX) {
+      strcpy(txPacket + used, block);
+    }
+  }
+
   // ---- recorder block, one packet in ten (SD_BLOCK_EVERY) ----
   //
   // What printStatus's [SD] line says, minus the parts the ground can work out

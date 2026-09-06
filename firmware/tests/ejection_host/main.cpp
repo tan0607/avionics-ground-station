@@ -19,8 +19,10 @@ static unsigned long rises = 0;
 static unsigned long falls = 0;
 static unsigned long imuSamples = 0;
 static unsigned long baroSamples = 0;
+static char noseAxis = 'z'; // legacy tests; MOUNT y selects confirmed A/B install
 
 static void snapshot(const std::string& kind, const std::string& label = "") {
+  const ArmReadiness ready = armReadiness();
   std::cout << std::setprecision(9)
     << "{\"kind\":\"" << kind << "\",\"label\":\"" << label
     << "\",\"vehicle\":\"" << VEHICLE_NAME << "\",\"ms\":" << millis()
@@ -32,7 +34,15 @@ static void snapshot(const std::string& kind, const std::string& label = "") {
     << ",\"reason\":\"" << (lastFireReason ? lastFireReason : "")
     << "\",\"alt\":" << altFiltered << ",\"max_alt\":" << maxAlt
     << ",\"vz\":" << vertVel << ",\"accel\":" << accelMag
+    << ",\"ax\":" << ax << ",\"ay\":" << ay << ",\"az\":" << az
+    << ",\"fax\":" << fax << ",\"fay\":" << fay << ",\"faz\":" << faz
+    << ",\"gyro\":" << gyroMag << ",\"roll\":" << rollKal << ",\"pitch\":" << pitchKal
+    << ",\"baro_input\":" << baroAltMSL
+    << ",\"imu_ok\":" << imuOK << ",\"baro_ok\":" << baroOK
     << ",\"gyro_cal\":" << gyroCalDone << ",\"imu_samples\":" << imuSamples
+    << ",\"arm_wait\":" << static_cast<int>(ready.wait)
+    << ",\"arm_delay_ms\":" << ready.delayRemainingMs
+    << ",\"arm_still_ms\":" << ready.stillRemainingMs
     << ",\"baro_samples\":" << baroSamples
     << ",\"imu_age_ms\":" << (millis() - lastImuUpdate)
     << ",\"baro_age_ms\":" << (millis() - lastBaroUpdate)
@@ -80,6 +90,9 @@ int main() {
         snapshot("boot");
       } else if (!booted) {
         throw std::runtime_error("BOOT required");
+      } else if (command == "MOUNT") {
+        if (!(in >> noseAxis) || (noseAxis != 'y' && noseAxis != 'z'))
+          throw std::runtime_error("MOUNT must be y or z");
       } else if (command == "STEP") {
         unsigned long next;
         float altitude, accelG, gyroZ;
@@ -93,8 +106,9 @@ int main() {
         imuOK = imuHealthy != 0;
         baroOK = baroHealthy != 0;
         if (imuOK && freshImu) {
-          ax = ay = 0;
-          az = accelG * GRAVITY;
+          ax = 0;
+          ay = noseAxis == 'y' ? accelG * GRAVITY : 0;
+          az = noseAxis == 'z' ? accelG * GRAVITY : 0;
           gx = gy = 0;
           gz = gyroZ;
           lastImuUpdate = millis();
@@ -137,4 +151,5 @@ int main() {
     std::cerr << e.what() << '\n';
     return 1;
   }
+  return 0;
 }

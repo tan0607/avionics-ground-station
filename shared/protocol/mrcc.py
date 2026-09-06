@@ -60,9 +60,9 @@ GS_CHANNEL_RE = re.compile(
     r"(?:RX ready - vehicle\s+|### GS CHANNEL=|### GS STATUS channel=)([A-Z])\b",
     re.IGNORECASE,
 )
-# Confirmed installed orientation on 2026-09-05: vehicle B's +Y points to nose.
-# A and streams without channel context retain the previous +Z convention.
-NOSE_AXIS_BY_CHANNEL = {"B": "y"}
+# Confirmed on 2026-09-06: both vehicles have IMU +Y pointing to the nose.
+# Streams without channel context retain the previous +Z convention.
+NOSE_AXIS_BY_CHANNEL = {"A": "y", "B": "y"}
 
 # --- field-name aliases ----------------------------------------------------
 # The transmitter has now shipped THREE spellings of the same telemetry
@@ -203,6 +203,9 @@ AUX_FIELDS: tuple[str, ...] = (
     # matters more here than elsewhere: a 0 in aux_sdl would describe a healthy
     # recorder as a dead one.
     "SDF", "SDL", "SDE",
+    # Prelaunch arming report (Flight.h): blocker mask and remaining seconds.
+    # Missing on legacy firmware, in flight, or when packet budget omits it.
+    "AW", "AD", "AS",
 )
 
 # `aux_`-prefixed and lowercased so an aux field can never collide with a

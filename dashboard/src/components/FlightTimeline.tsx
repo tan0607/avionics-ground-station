@@ -30,7 +30,7 @@ export function FlightTimeline({ state }: { state: FlightState | null }) {
       <div className="border-b border-hairline px-4 py-2">
         <span className="text-[0.625rem] uppercase tracking-[0.16em] text-ink-mute">Flight State</span>
       </div>
-      <ol className="flex min-h-0 flex-1 flex-col px-4 py-3">
+      <ol className="flex min-h-0 flex-1 flex-col px-4 py-3 [@media(max-height:850px)]:grid [@media(max-height:850px)]:grid-cols-2 [@media(max-height:850px)]:gap-y-1">
         {ORDER.map((s, i) => {
           const done = activeIdx >= 0 && i < activeIdx
           const active = i === activeIdx
@@ -53,7 +53,7 @@ export function FlightTimeline({ state }: { state: FlightState | null }) {
                 {!last && (
                   <span
                     aria-hidden
-                    className={cn("w-px flex-1", done ? "bg-ink-dim/60" : "bg-hairline")}
+                    className={cn("w-px flex-1 [@media(max-height:850px)]:hidden", done ? "bg-ink-dim/60" : "bg-hairline")}
                   />
                 )}
               </div>

@@ -124,17 +124,9 @@ void readIMU() {
   my = myICM.magY();
   mz = myICM.magZ();
 
-  // RAW heading - level-only, and it shows. Kept as the
-  // "before" trace; Filters.cpp produces the tilt
-  // compensated one next to it.
-  heading = atan2(my, mx) * 180.0 / PI;
-
-  if (heading < 0)       heading += 360.0;
-  if (heading >= 360.0)  heading -= 360.0;
-
   // Everything above is untouched sensor output. Run the
-  // filter chain here, on the new sample, so dt is the
-  // real IMU interval and not the loop period.
+  // filter chain and mounted-frame heading here, on the new
+  // sample, so dt is the real IMU interval and not the loop period.
   filterUpdate();
 
   lastImuUpdate = millis();
