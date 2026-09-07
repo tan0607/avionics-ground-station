@@ -1,0 +1,4 @@
+# Keep launchers usable after checkout on either operating system.
+*.command text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

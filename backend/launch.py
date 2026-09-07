@@ -1,13 +1,13 @@
 """One command that brings the whole ground station up.
 
-`start.command` runs this after making sure the venv and `dashboard/dist` are
+`mac/start.command` or `window/start.ps1` runs this after making sure the venv and `dashboard/dist` are
 in place. What is left is the part the operator used to do by hand every time,
 from README's "Live version" section: find which `/dev/cu.*` the receiver landed
 on, start `backend.app` against it, then open the console in a browser.
 
-    ./start.command                 # find the ground station, serve, open the UI
-    ./start.command --demo          # no hardware: the built-in flight simulator
-    ./start.command --replay flights/2026-08-19T05-54-40Z
+    ./mac/start.command                 # find the ground station, serve, open the UI
+    ./mac/start.command --demo          # no hardware: the built-in flight simulator
+    ./mac/start.command --replay flights/2026-08-19T05-54-40Z
 
 Anything this does not recognise is forwarded to `backend.app` untouched, so
 `--fast`, `--loss`, `--no-reset` and friends still work through the launcher.
@@ -232,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="don't open the console automatically")
     ap.add_argument("--browser-url", metavar="URL",
                     help="open this instead of the backend's own URL "
-                         "(start.command --dev points it at Vite)")
+                         "(mac/start.command --dev points it at Vite)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     args, passthrough = ap.parse_known_args(argv)

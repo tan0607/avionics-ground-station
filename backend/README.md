@@ -10,7 +10,7 @@ it durably, and serves both the built dashboard and a live WebSocket from
 ```bash
 # from the repo root
 python3 -m venv backend/.venv
-backend/.venv/bin/pip install fastapi "uvicorn[standard]" pyserial
+backend/.venv/bin/pip install fastapi "uvicorn[standard]" pyserial websockets
 ```
 
 ## Run (from the repo root, so `shared.*` imports resolve)

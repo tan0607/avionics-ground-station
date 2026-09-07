@@ -47,11 +47,29 @@ fly ([`firmware/README.md`](firmware/README.md) covers flashing).
 
 ### 2. Run it
 
-```bash
-./start.command --demo
+On **Windows**, install Python 3.12+ and Node.js 22.12+, then double-click
+`window/start.cmd` to launch in a visible terminal, or run from PowerShell:
+
+```powershell
+.\window\start.cmd --demo                 # simulated telemetry, no hardware needed
+.\window\start.cmd --serial COM5          # use your receiver's actual COM port
 ```
 
-Or **double-click `start.command` in Finder** — with `--demo` it needs a
+The Windows launcher creates the backend environment, installs dependencies,
+builds the dashboard, and starts the backend, which serves the UI at
+**http://127.0.0.1:8000**. Keep the terminal open; Ctrl-C stops the server.
+Without `--demo` it looks for a USB receiver and prompts if none is found.
+It accepts the backend launcher's flags, including `--replay`, `--no-reset`,
+`--no-browser`, and `--port`. For Windows hot reload, run `npm run dev` in
+`dashboard` in a second terminal and open its URL with `?source=ws`.
+
+On **macOS/Linux**:
+
+```bash
+./mac/start.command --demo
+```
+
+Or **double-click `mac/start.command` in Finder** — with `--demo` it needs a
 terminal, but the bare double-click is the launch-day path.
 
 The first run takes a couple of minutes: it creates the Python venv, installs
@@ -80,9 +98,9 @@ never reads as a broken clone.
 
 | Missing after clone | What creates it | Why it is ignored |
 |---|---|---|
-| `backend/.venv/` | first `./start.command` | machine-specific |
-| `dashboard/node_modules/` | first `./start.command` | large, lockfile-derived |
-| `dashboard/dist/` | `./start.command` (rebuilds when sources are newer) | build output |
+| `backend/.venv/` | first `./mac/start.command` | machine-specific |
+| `dashboard/node_modules/` | first `./mac/start.command` | large, lockfile-derived |
+| `dashboard/dist/` | `./mac/start.command` (rebuilds when sources are newer) | build output |
 | `flights/` | every run — the recorder is always on | per-run data, gets large |
 
 One thing that **is** committed and matters: `dashboard/public/basemap.pmtiles`,
@@ -92,7 +110,7 @@ view works with the network off.
 Because `flights/` is empty on a fresh clone, anything in these docs that
 replays a recording — `--replay flights/2026-08-19T05-54-40Z` and friends — has
 nothing to point at until you have made a recording of your own. Run
-`./start.command --demo` for a minute and you will have one.
+`./mac/start.command --demo` for a minute and you will have one.
 
 ### If it does not start
 
@@ -109,16 +127,21 @@ nothing to point at until you have made a recording of your own. Run
 
 ## Ways to run it
 
-`./start.command` is the whole launch-day procedure. Every mode below is the
+The platform launchers live in `mac/` and `window/`. The root `start.command`
+and `start.cmd` remain small forwarding shortcuts, so existing commands still
+work. Windows uses `.\window\start.cmd` with the same backend flags shown below;
+`--dev` remains a macOS/Linux launcher option.
+
+`./mac/start.command` is the whole launch-day procedure. Every mode below is the
 same script with a different byte source.
 
 | Command | What it does |
 |---|---|
-| `./start.command` | **live** — find the receiver on USB, serve, open the console |
-| `./start.command --demo` | no hardware: the flight simulator, looping |
-| `./start.command --replay flights/<session>` | no hardware: replay a real recording |
-| `./start.command --dev` | Vite hot reload (`:5180`) in front of a live backend |
-| `./start.command --serial /dev/cu.usbserial-0001` | skip USB autodetect |
+| `./mac/start.command` | **live** — find the receiver on USB, serve, open the console |
+| `./mac/start.command --demo` | no hardware: the flight simulator, looping |
+| `./mac/start.command --replay flights/<session>` | no hardware: replay a real recording |
+| `./mac/start.command --dev` | Vite hot reload (`:5180`) in front of a live backend |
+| `./mac/start.command --serial /dev/cu.usbserial-0001` | skip USB autodetect |
 
 Also `--no-browser`, `--wait SECONDS` (how long to wait for the receiver before
 asking what to do; default 20), and anything `backend.app` takes — `--loop`,
@@ -141,7 +164,7 @@ one-time setup it performs for you is:
 ```bash
 # backend deps (from repo root)
 python3 -m venv backend/.venv
-backend/.venv/bin/pip install fastapi uvicorn pyserial
+backend/.venv/bin/pip install fastapi uvicorn pyserial websockets
 
 # dashboard deps
 cd dashboard && npm install
@@ -175,7 +198,7 @@ Connection shows `— (mock)`.
 
 ### B. Full stack — backend + fake telemetry
 
-This is what `./start.command --demo` runs. It drives the real pipeline
+This is what `./mac/start.command --demo` runs. It drives the real pipeline
 (serial-shaped bytes → `raw.log` → CSV → WebSocket) from the simulator, so
 **session files and export work**, exactly like a real flight.
 
@@ -201,7 +224,7 @@ source tag reads **● LIVE**, Settings → Connection shows the session id and 
 
 #### Front-end dev against the live backend
 
-`./start.command --dev` does this in one terminal. By hand it is two:
+`./mac/start.command --dev` does this in one terminal. By hand it is two:
 
 ```bash
 # terminal 1
@@ -253,7 +276,7 @@ null-vs-zero handling for the peripherals MRCC cannot see (SD/PYRO/VBAT read
 ## Running with real hardware
 
 Wire up the ground station (see [`firmware/README.md`](firmware/README.md)) and
-run **`./start.command`** — it does everything below for you. By hand:
+run **`./mac/start.command`** — it does everything below for you. By hand:
 
 ```bash
 cd dashboard && npm run build && cd ..          # once, or after UI changes
@@ -419,7 +442,9 @@ defaults per source, so a live run needs no flag.
 
 | Path | What it is |
 |---|---|
-| `start.command` | the launcher — deps, build, serial link, backend and console in one action |
+| `mac/start.command` | macOS/Linux launcher — deps, build, serial link, backend and console |
+| `window/start.cmd`, `window/start.ps1` | Windows launcher — visible terminal, deps, build, serial link, backend and console |
+| `start.command`, `start.cmd` | compatibility shortcuts to the platform launchers |
 | `backend/` | reads bytes (serial in prod, a simulator in dev), logs raw bytes first, decodes, writes the session CSVs, broadcasts each frame over `/ws`, and serves the built dashboard |
 | `dashboard/` | Vite + React + TS console: Live, Map, Log, Flights, Settings |
 | `firmware/` | vehicle sketches `MRCC_FlightComputer_A` / `MRCC_FlightComputer_B` (ESP32-S3: sensors, filters, flight state, pyro, SD log, downlink) and `MRCC_GroundStation` (ESP32: receives, prints to USB). Plus `SD_Doctor` and host-side filter tooling. **Read `firmware/README.md` before flashing.** |
