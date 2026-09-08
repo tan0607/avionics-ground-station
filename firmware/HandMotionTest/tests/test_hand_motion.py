@@ -85,9 +85,16 @@ class HandMotionTest(unittest.TestCase):
             self.assertFalse(end["fired"])
 
     def test_backup_is_distinct_and_output_remains_low(self):
-        t = Timeline().hold(20000).hold(20500, accel=2).hold(45000, baro=False).mark("end")
+        t = Timeline().hold(20000).hold(20500, accel=2).mark("launched")
+        # Launch occurs between 20.0 and 20.5 s: no backup before 36.0 s,
+        # and the simulated fire must be latched by 36.6 s at 20 Hz cadence.
+        t.hold(35990, baro=False).mark("before_deadline")
+        t.hold(36600, baro=False).mark("end")
         for v in "AB":
-            end = self.simulate(v, t)[-1]
+            events = self.simulate(v, t)
+            before = next(e for e in events if e["label"] == "before_deadline")
+            self.assertFalse(before["fired"])
+            end = events[-1]
             self.assertTrue(end["fired"])
             self.assertEqual(end["reason"], "TIMER BACKUP")
             self.assertEqual(end["fire_count"], 1)

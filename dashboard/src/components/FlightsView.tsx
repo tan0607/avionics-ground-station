@@ -15,7 +15,7 @@
  * The right pane shows bounded tails rather than loading a whole multi-hour CSV
  * into memory.
  */
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Download, RefreshCw, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -44,6 +44,10 @@ const CORE_COLUMNS = [
   "lon_deg",
 ]
 const EMPTY_FLIGHTS: RecordedFlight[] = []
+const NUMERIC_COLUMNS = new Set([
+  "seq", "onboard_ms", "baro_alt_m", "vspeed_ms", "rssi_dbm", "snr_db",
+  "lat_deg", "lon_deg", "gps_lat", "gps_lon",
+])
 
 function flightId(flight: RecordedFlight): string {
   return `${flight.session}/${flight.flight}`
@@ -270,46 +274,46 @@ function ArchiveRow({
     <button
       type="button"
       aria-pressed={selected}
+      data-archive-id={flightId(row)}
       onClick={() => onSelect(row)}
       className={cn(
-        "w-full border-b border-hairline border-l-2 py-2 pr-3 text-left outline-none transition-colors",
+        "relative w-full border-b border-hairline py-2 pr-3 pl-6 text-left outline-none transition-colors",
         "focus-visible:bg-surface-2 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
-        nested ? "pl-6" : "pl-3",
         selected
-          ? "border-l-data bg-surface-2 text-ink"
-          : "border-l-transparent text-ink-dim hover:bg-surface-2/60 hover:text-ink",
+          ? "bg-surface-2 text-ink ring-1 ring-inset ring-ink-mute"
+          : "text-ink-dim hover:bg-surface-2/60 hover:text-ink",
       )}
     >
-      <div className="flex items-center justify-between gap-2">
+      {nested && <span aria-hidden className="absolute left-2 top-2 text-xs text-ink-mute">↳</span>}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
         <span className={cn("tnum truncate text-xs", empty ? "text-ink-mute" : "font-medium")}>
           {rowTitle(row)}
         </span>
-        {row.recording ? (
-          <span className="flex shrink-0 items-center gap-1 text-[0.5625rem] uppercase tracking-[0.12em] text-caution">
+        <span className="flex items-center justify-end gap-1.5">
+          <span aria-hidden={!row.recording} className={cn("flex w-8 shrink-0 items-center gap-1 text-[0.5625rem] uppercase text-caution", !row.recording && "invisible")}>
             <span className="size-1.5 rounded-full bg-caution" />
             rec
           </span>
-        ) : (
           <ProvenanceBadge kind={row.provenance.kind} />
-        )}
+        </span>
       </div>
-      <div className="tnum mt-1 flex items-baseline gap-2 text-[0.625rem] text-ink-mute">
-        <span className="truncate">{row.kind === "session" ? row.session : row.flight}</span>
+      <div className="tnum mt-1 flex min-w-0 items-baseline gap-2 text-[0.625rem] text-ink-mute">
+        <span className="min-w-0 truncate" title={row.kind === "session" ? row.session : row.flight}>{row.kind === "session" ? row.session : row.flight}</span>
         {/* A replay names what it re-ran, so it can never be mistaken for the
             capture it copied — these nest three deep in this archive. */}
         {origin && <span className="truncate opacity-70">← {origin}</span>}
-      </div>
-      <div className="tnum mt-1 flex flex-wrap gap-x-3 text-[0.625rem] text-ink-mute">
-        <span>{duration(row.duration_s)}</span>
-        <span className={empty ? "text-ink-mute/60" : undefined}>
-          {empty ? "no rows" : `${row.rows.toLocaleString()} rows`}
-        </span>
-        <span>{bytes(row.raw_bytes)}</span>
         {row.flight_count > 0 && (
-          <span className="text-ink-dim">
+          <span className="ml-auto shrink-0 text-ink-dim">
             {row.flight_count} flight{row.flight_count === 1 ? "" : "s"}
           </span>
         )}
+      </div>
+      <div className="tnum mt-1 grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)] gap-x-2 text-right text-[0.625rem] text-ink-mute [&>span]:min-w-0 [&>span]:break-words">
+        <span>{duration(row.duration_s)}</span>
+        <span className={cn("text-right", empty && "text-ink-mute/60")}>
+          {empty ? "no rows" : `${row.rows.toLocaleString()} rows`}
+        </span>
+        <span className="text-right">{bytes(row.raw_bytes)}</span>
       </div>
     </button>
   )
@@ -324,8 +328,47 @@ function ArchiveIndex({
   selectedId: string | null
   onSelect: (row: RecordedFlight) => void
 }) {
+  const list = useRef<HTMLDivElement>(null)
+  const anchor = useRef<{ id: string; top: number } | null>(null)
+  const previous = useRef<Set<string> | null>(null)
+  const [newIds, setNewIds] = useState<string[]>([])
+  const captureAnchor = () => {
+    const el = list.current
+    if (!el || el.scrollTop < 4) { anchor.current = null; return }
+    const top = el.getBoundingClientRect().top
+    const first = Array.from(el.querySelectorAll<HTMLElement>("[data-archive-id]"))
+      .find((row) => row.getBoundingClientRect().bottom > top)
+    anchor.current = first ? { id: first.dataset.archiveId!, top: first.getBoundingClientRect().top - top } : null
+  }
+  useLayoutEffect(() => {
+    const ids = new Set(groups.flatMap((group) => [flightId(group.session), ...group.flights.map(flightId)]))
+    const added = previous.current ? [...ids].filter((id) => !previous.current!.has(id)) : []
+    const el = list.current
+    if (el && anchor.current) {
+      const saved = anchor.current
+      const row = Array.from(el.querySelectorAll<HTMLElement>("[data-archive-id]"))
+        .find((item) => item.dataset.archiveId === saved.id)
+      if (row) el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top - saved.top
+      if (added.length) setNewIds((current) => [...new Set([...current, ...added])])
+    }
+    previous.current = ids
+    captureAnchor()
+  }, [groups])
   return (
-    <div className="min-h-0 flex-1 overflow-auto">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+    {newIds.length > 0 && <button type="button" className="absolute right-2 top-1 z-10 border border-ink-mute bg-surface px-3 py-1 text-xs text-ink" onClick={() => {
+      const rows = groups.flatMap((group) => [group.session, ...group.flights])
+      const target = rows.find((row) => newIds.includes(flightId(row)))
+      if (target) {
+        onSelect(target)
+        const node = Array.from(list.current?.querySelectorAll<HTMLElement>("[data-archive-id]") ?? [])
+          .find((item) => item.dataset.archiveId === flightId(target))
+        node?.scrollIntoView({ block: "nearest" })
+      }
+      setNewIds([])
+      captureAnchor()
+    }}>↑ New recordings · {newIds.length}</button>}
+    <div ref={list} onScroll={captureAnchor} className="min-h-0 flex-1 overflow-auto [overflow-anchor:none]">
       {groups.map((group) => (
         <div key={group.session.session}>
           <ArchiveRow
@@ -345,6 +388,7 @@ function ArchiveIndex({
           ))}
         </div>
       ))}
+    </div>
     </div>
   )
 }
@@ -382,7 +426,7 @@ function Metric({ label, value, ink }: { label: string; value: string; ink?: str
   return (
     <div className="min-w-0 border-r border-hairline px-3 py-2 last:border-r-0">
       <div className="text-[0.5625rem] uppercase tracking-[0.14em] text-ink-mute">{label}</div>
-      <div className={cn("tnum mt-1 truncate text-xs", ink ?? "text-ink")} title={value}>
+      <div className={cn("tnum mt-1 break-words text-xs", ink ?? "text-ink")} title={value}>
         {value}
       </div>
     </div>
@@ -434,14 +478,16 @@ function TelemetryPreview({ detail }: { detail: RecordedFlightDetail }) {
           <Table className="tnum min-w-max text-[0.6875rem]">
             <TableHeader className="sticky top-0 z-10 bg-surface">
               <TableRow className="hover:bg-transparent">
-                {columns.map((column) => <TableHead key={column}>{column}</TableHead>)}
+                {columns.map((column) => (
+                  <TableHead key={column} className={NUMERIC_COLUMNS.has(column) ? "text-right" : undefined}>{column}</TableHead>
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>
               {detail.telemetry.rows.map((row, index) => (
                 <TableRow key={`${row.host_time ?? "row"}-${row.seq ?? index}-${index}`}>
                   {columns.map((column) => (
-                    <TableCell key={column} className="py-1 text-ink-dim">{row[column] || "—"}</TableCell>
+                    <TableCell key={column} className={cn("py-1 text-ink-dim", NUMERIC_COLUMNS.has(column) && "text-right")}>{row[column] || "—"}</TableCell>
                   ))}
                 </TableRow>
               ))}
@@ -554,7 +600,7 @@ function DetailPane({
 }) {
   const detail = useRecordedFlightDetail(flight)
 
-  if (detail.status === "loading" || detail.status === "idle") {
+  if (!detail.data && (detail.status === "loading" || detail.status === "idle")) {
     return (
       <div aria-label="Loading flight detail" className="flex flex-1 flex-col gap-3 p-4">
         <div className="h-4 w-40 animate-pulse rounded-sm bg-surface-2" />
@@ -564,7 +610,7 @@ function DetailPane({
     )
   }
 
-  if (detail.status === "error" || !detail.data) {
+  if (!detail.data) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-center">
         <div className="text-xs uppercase tracking-[0.14em] text-caution">Recording detail unavailable</div>
@@ -586,7 +632,8 @@ function DetailPane({
 
   return (
     <>
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-hairline px-3 py-2">
+      {detail.status === "error" && <div role="status" className="px-3 py-1 text-xs text-caution">Update failed · showing last received data <button type="button" onClick={detail.refresh}>Retry</button></div>}
+      <div className="flex shrink-0 flex-col gap-2 border-b border-hairline px-3 py-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <ProvenanceBadge kind={kind} />
@@ -599,7 +646,7 @@ function DetailPane({
             {data.path}
           </div>
         </div>
-        <div className="flex flex-wrap justify-end gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {data.files.map((file) => (
             <Button key={file.name} asChild variant="outline" size="xs">
               <a href={recordedFlightFileUrl(data, file.name)} download title={`Download ${file.name} · ${bytes(file.bytes)}`}>
@@ -621,7 +668,7 @@ function DetailPane({
           )}
         </div>
       )}
-      <div className="grid shrink-0 grid-cols-3 border-b border-hairline sm:grid-cols-6">
+      <div className="grid shrink-0 grid-cols-3 border-b border-hairline xl:grid-cols-[minmax(13rem,1.5fr)_repeat(5,minmax(0,1fr))]">
         <Metric label={isSession ? "First frame" : "Started"} value={localTime(data.started_utc)} />
         <Metric label="Duration" value={duration(data.duration_s)} />
         <Metric
@@ -670,7 +717,7 @@ export function FlightsView() {
       .filter((session) => kind === "all" || session.provenance.kind === kind)
       // A session holding a declared flight is never hidden as empty: the
       // flight inside it is the whole reason someone would look for it.
-      .filter((session) => !hideEmpty || session.rows > 0 || (bySession.get(session.session)?.length ?? 0) > 0)
+      .filter((session) => !hideEmpty || session.recording || session.rows > 0 || (bySession.get(session.session)?.length ?? 0) > 0)
       .map((session) => ({ session, flights: bySession.get(session.session) ?? [] }))
   }, [sessions, flights, kind, hideEmpty])
 
@@ -689,8 +736,8 @@ export function FlightsView() {
   }, [archive.status, visible, selected, selectedId])
 
   const hiddenByEmpty = useMemo(
-    () => sessions.filter((s) => s.rows === 0).length,
-    [sessions],
+    () => sessions.filter((s) => s.rows === 0 && !s.recording && !flights.some((f) => f.session === s.session)).length,
+    [sessions, flights],
   )
   const loaded = archive.status === "ok" || archive.data != null
 
@@ -737,7 +784,7 @@ export function FlightsView() {
                 hidden={hiddenByEmpty}
               />
               {groups.length ? (
-                <ArchiveIndex groups={groups} selectedId={selectedId} onSelect={(row) => setSelectedId(flightId(row))} />
+                <ArchiveIndex key={`${kind}/${hideEmpty}`} groups={groups} selectedId={selectedId} onSelect={(row) => setSelectedId(flightId(row))} />
               ) : (
                 <EmptyArchive filtered />
               )}

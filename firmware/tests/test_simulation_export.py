@@ -63,7 +63,7 @@ class SimulationExportTest(unittest.TestCase):
         boost = next(e for e in run["events"] if e["kind"] == "state" and e["state"] == "BOOST")
         fire = next(e for e in run["events"] if e["kind"] == "rise")
         self.assertEqual(fire["reason"], "TIMER BACKUP")
-        self.assertEqual(fire["ms"] - boost["ms"], 19050)
+        self.assertEqual(fire["ms"] - boost["ms"], 16050)
         pad = simulate(self.binary, "B", "pad-only")
         self.assertFalse(any(e["kind"] == "rise" for e in pad["events"]))
         self.assertNotIn("BOOST", {s["state"] for s in pad["samples"]})

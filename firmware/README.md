@@ -57,7 +57,7 @@ reset/pulse safety findings.
 ### Post-launch reset and pulse cutoff (2026-09-08)
 
 After detected launch, a valid retained RTC launch counter/calibration restores
-elapsed flight time through warm reset, including restart downtime. The 19 s
+elapsed flight time through warm reset, including restart downtime. The 16 s
 backup does not start over. Normal barometric recovery retains its 1.5 s
 post-initialization guard; an already expired backup proceeds at flight-service
 cadence once startup finishes. Slow sensor/SD initialization can still delay it.

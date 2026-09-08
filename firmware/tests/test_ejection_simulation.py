@@ -211,14 +211,14 @@ class EjectionSimulationTest(unittest.TestCase):
                 t = Timeline(latch=second).hold(23000, baro=False, accel=0)
                 fire, = events_of(self.simulate(vehicle, t), "rise")
                 elapsed = (fire["rtc_ticks"] - first["launch_ticks"]) / 1000
-                self.assertGreaterEqual(elapsed, 19000)
-                self.assertLessEqual(elapsed, 19100)
+                self.assertGreaterEqual(elapsed, 16000)
+                self.assertLessEqual(elapsed, 16100)
 
-    def test_expired_backup_after_reset_does_not_wait_another_19_seconds(self):
+    def test_expired_backup_after_reset_does_not_wait_another_16_seconds(self):
         for vehicle in self.binaries:
             with self.subTest(vehicle=vehicle):
                 first = self.simulate(vehicle, Timeline().hold(LIFTOFF_MS)
-                    .fly(until=218000, baro_loss_ms=205000).mark("reset"))[-1]
+                    .fly(until=215000, baro_loss_ms=205000).mark("reset"))[-1]
                 # Reset downtime carries the clock past the original deadline.
                 events = self.simulate(vehicle, Timeline(latch=first)
                     .hold(2200, baro=False, accel=0))
@@ -234,8 +234,8 @@ class EjectionSimulationTest(unittest.TestCase):
                     "rtc_ticks": 0})
                 t.hold(23000, baro=False, accel=0)
                 fire, = events_of(self.simulate(vehicle, t), "rise")
-                self.assertGreaterEqual(fire["ms"], 20500)
-                self.assertLessEqual(fire["ms"], 20600)
+                self.assertGreaterEqual(fire["ms"] - fire["launch_ms"], 16000)
+                self.assertLessEqual(fire["ms"] - fire["launch_ms"], 16100)
 
     def test_power_on_ignores_even_valid_retained_flight(self):
         for vehicle in self.binaries:
@@ -463,8 +463,8 @@ class EjectionSimulationTest(unittest.TestCase):
                     self.assertEqual(len(rises), 1)
                     fire = rises[0]
                     self.assertEqual(fire["reason"], "TIMER BACKUP")
-                    self.assertGreaterEqual(fire["ms"] - fire["launch_ms"], 19000)
-                    self.assertLessEqual(fire["ms"] - fire["launch_ms"], 19100)
+                    self.assertGreaterEqual(fire["ms"] - fire["launch_ms"], 16000)
+                    self.assertLessEqual(fire["ms"] - fire["launch_ms"], 16100)
 
     def test_low_altitude_blocks_baro_apogee_but_not_backup(self):
         timeline = Timeline().hold(LIFTOFF_MS)
@@ -698,7 +698,7 @@ def reset_preserves_original_backup_deadline(self, vehicle):
     second = Timeline(latch=before).hold(23000, baro=False, accel=0).mark("end")
     fire, = events_of(self.simulate(vehicle, second), "rise")
     total_since_launch = 210000 - before["launch_ms"] + fire["ms"]
-    self.assertLessEqual(total_since_launch, 19100,
+    self.assertLessEqual(total_since_launch, 16100,
                          f"Reset restarted backup; fired {total_since_launch} ms after original launch")
 
 

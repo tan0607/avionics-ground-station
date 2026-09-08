@@ -18,3 +18,7 @@ Status: source and build verification complete; **not uploaded and not bench-tes
 - Source/test digests: `tested-source-sha256.json`.
 
 Still required: identify A/B and correct USB interface, confirm disconnected energetic load, upload, verify the HAND TEST banner and real sensor samples, then measure actual hand-motion behavior. Hand-scale pressure sensitivity is experimental and can false-trigger or fail to detect movement. A HAND-profile success does not validate production flight thresholds. Dashboard currently has no dedicated HAND TEST warning; `HT=1` identifies the raw packets and AR/FI are simulated.
+
+## 2026-09-09 timer-only update
+
+Backup changed from 19 s to 16 s in both isolated sketches and both formal sketches. HandMotionTest 13/13 checks and both isolated Arduino builds passed again. The original snapshot is preserved as `source-snapshot-2026-09-08.json`; current baseline and tested-source hashes were refreshed for the explicitly changed files. Full evidence: [16 s backup validation](../../docs/validation/2026-09-09-backup-timeout-16s.md). No upload or device test was performed in this update.

@@ -702,8 +702,8 @@ void serviceFlight() {
       // fly, and 15 m of LAUNCH_ALT is only ~1.8 hPa - inside what a
       // gust across imperfect static ports, or a neighbouring motor,
       // can produce. A launch called there is not a late deployment;
-      // APOGEE_TIMEOUT has no altitude gate, so the charge fires 19 s
-      // later, on the pad, with people on the range.
+      // APOGEE_TIMEOUT has no altitude gate, so the charge fires after
+      // that timeout, on the pad, with people on the range.
       //
       // So ask for corroboration. A real launch always carries
       // acceleration, and BURNOUT_ACCEL is a low bar it clears by a

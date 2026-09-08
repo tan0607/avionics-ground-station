@@ -1,5 +1,5 @@
 /** Read-only access to the backend's persistent recorded-flight archive. */
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { apiUrl } from "@/lib/api"
 
 export interface RecordedFile {
@@ -105,8 +105,11 @@ const ARCHIVE_POLL_MS = 5000
 export function useRecordedFlights(): ArchiveState {
   const [status, setStatus] = useState<ArchiveState["status"]>("loading")
   const [data, setData] = useState<ArchivePayload | null>(null)
+  const pending = useRef(false)
 
   const refresh = useCallback(async () => {
+    if (pending.current) return
+    pending.current = true
     try {
       const response = await fetch(apiUrl("/flights"), { cache: "no-store" })
       if (!response.ok) throw new Error(String(response.status))
@@ -114,6 +117,8 @@ export function useRecordedFlights(): ArchiveState {
       setStatus("ok")
     } catch {
       setStatus("unreachable")
+    } finally {
+      pending.current = false
     }
   }, [])
 
@@ -169,28 +174,35 @@ export function useRecordedFlightDetail(flight: RecordedFlight | null): DetailSt
 
   const session = flight?.session ?? null
   const name = flight?.flight ?? null
+  const request = useRef<AbortController | null>(null)
   const refresh = useCallback(async () => {
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
     if (!session || !name) {
       setStatus("idle")
       setData(null)
       return
     }
-    setStatus("loading")
+    setStatus((previous) => previous === "ok" ? "ok" : "loading")
     try {
       const path = `/flights/${encodeURIComponent(session)}/${encodeURIComponent(name)}`
-      const response = await fetch(apiUrl(path), { cache: "no-store" })
+      const response = await fetch(apiUrl(path), { cache: "no-store", signal: controller.signal })
       if (!response.ok) throw new Error(String(response.status))
-      setData((await response.json()) as RecordedFlightDetail)
+      const next = (await response.json()) as RecordedFlightDetail
+      if (controller.signal.aborted) return
+      setData(next)
       setStatus("ok")
     } catch {
-      setData(null)
+      if (controller.signal.aborted) return
       setStatus("error")
     }
   }, [session, name])
 
   useEffect(() => {
     refresh()
-  }, [refresh])
+    return () => request.current?.abort()
+  }, [refresh, flight?.rows, flight?.raw_bytes, flight?.recording, flight?.duration_s, flight?.events, flight?.flight_count])
 
   return { status, data, refresh }
 }

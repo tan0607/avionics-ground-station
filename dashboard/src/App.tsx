@@ -3,7 +3,7 @@
  * Left view rail · top mission bar · KPI instrument strip · main split:
  * a stacked sensor-chart column (altitude, then vertical-speed + tilt + the
  * body accelerations) on the left, GO/NO-GO + flight-state timeline on the right. Pure black, 1px hairline
- * panels, white data / semantic status only. One viewport, no scroll.
+ * panels, white data / semantic status only. One viewport; only the status column scrolls.
  * useTelemetry owns the live data and mission reset; the secondary channels
  * follow its chart revision through useSensorSeries.
  */
@@ -186,14 +186,14 @@ function App() {
         />
 
         {view === "live" && (
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto" role="region" aria-label="Live telemetry" tabIndex={0}>
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden" role="region" aria-label="Live telemetry">
             <KpiRow frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
             <AuxReadouts frame={telemetry.frame} />
             <div className="shrink-0 px-2 pt-2">
               <ArmingStatus key={mission.mission.name} frame={telemetry.frame} link={telemetry.link} />
             </div>
 
-            <main className="grid flex-1 shrink-0 grid-cols-[1fr_17rem] gap-2 p-2">
+            <main className="grid min-h-0 flex-1 grid-cols-[1fr_17rem] grid-rows-[minmax(0,1fr)] gap-2 p-2">
               {/* sensor-chart column */}
               <div className="flex min-h-0 min-w-0 flex-col gap-2">
                 <ChartCard
@@ -257,7 +257,12 @@ function App() {
               </div>
 
               {/* safety + phase */}
-              <div className="flex flex-col gap-2">
+              <div
+                className="flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-y-contain focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-ring"
+                role="region"
+                aria-label="Flight status"
+                tabIndex={0}
+              >
                 <GoNoGo frame={telemetry.frame} />
                 <SubsystemHealth frame={telemetry.frame} onboardLog={onboardLog} />
                 <FlightTimeline state={telemetry.frame?.flightState ?? null} />

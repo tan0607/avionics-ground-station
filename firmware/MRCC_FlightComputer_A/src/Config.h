@@ -409,13 +409,11 @@ const uint8_t       APOGEE_CONFIRM   = 4;      // consecutive samples
 // have looked wrong either - timerBackupUsed would just
 // be set, on a board whose baro was working perfectly.
 //
-// 19000 = 14.1 s x ~1.35. The margin covers what the sim
-// does not: motor lot variation, weathercocking, and a
-// headwind, any of which pushes apogee later. Below about
-// 17 s that margin is gone.
+// User-selected 16 s backup (2026-09-09), with reported simulated
+// apogee around 14 s. Timing margin still requires flight-specific validation.
 //
 // Re-tune this whenever the motor or the mass changes.
-const unsigned long APOGEE_TIMEOUT   = 19000;  // ms after launch
+const unsigned long APOGEE_TIMEOUT   = 16000;  // ms after launch
 
 // ---- landing ----
 const float         LAND_ALT_BAND    = 2.0;    // m
