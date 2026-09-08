@@ -21,7 +21,7 @@ void printMenu() {
   Serial.println();
   Serial.println("--------------- COMMANDS ---------------");
   Serial.println(" A = ARM   (pad, still, arm switch closed)");
-  Serial.println(" X = DISARM  (also blocks auto-arm until reboot)");
+  Serial.println(" X = DISARM  (blocks auto-arm across warm reset; power cycle clears)");
   Serial.println(" T = bench test fire (needs Y to confirm)");
   Serial.println(" D = dump log file to serial");
   Serial.println(" L = list files on card");

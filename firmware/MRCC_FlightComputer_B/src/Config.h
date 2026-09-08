@@ -341,14 +341,14 @@ const unsigned long FLIGHT_INTERVAL = 50;   // 20 Hz, same as baro
 const float         PAD_ACCEL_TOL  = 0.5;    // m/s2 away from 9.81
 const float         PAD_GYRO_TOL   = 5.0;    // deg/s
 const unsigned long PAD_STILL_TIME = 10000;  // must be still this long
-const unsigned long AUTO_ARM_DELAY = 180000; // minimum uptime before prelaunch arm
+const unsigned long AUTO_ARM_DELAY = 180000; // initial session wait; valid warm resets retain progress
 // PAD/calibration only: a missing 250 ms run breaks observed stillness.
 // Flight launch freshness and thresholds remain unchanged.
 const unsigned long PAD_IMU_MAX_GAP = 250;
 
 // ---- auto arm ----
 //
-// Normal prelaunch arming requires minimum boot uptime AND a full observed
+// Normal prelaunch arming requires the session waiting period AND a full observed
 // stationary IMU window AND completed gyro calibration. No IMU means no
 // prelaunch arm; barometer fallback remains available AFTER arming.
 // A software delay is only an operator buffer, not physical isolation.

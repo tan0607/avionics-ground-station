@@ -133,14 +133,10 @@ extern const char*   resetReasonName;
 // -----------------------------------------------------
 // FLIGHT LATCH - survives a reset, not a power loss
 //
-// THIS IS THE SINGLE MOST IMPORTANT SAFETY FEATURE IN
-// THE PROJECT.
-//
-// Pyro shares the main battery. Firing sags the rail,
-// a sag can brown out the ESP32, and a brownout reset
-// would otherwise bring the board back up in PAD with
-// no memory of having fired - and fire again, halfway
-// down. The latch is what makes that impossible.
+// Retained state and fire-attempt latch use RTC noinit RAM with validation.
+// They can survive supported warm resets while the RTC domain remains powered.
+// They do not establish successful deployment or survive total power loss.
+// A torn/invalid latch cannot restore flight history.
 //
 // Written on every state change. Read once at boot.
 // -----------------------------------------------------
@@ -151,3 +147,10 @@ uint8_t latchState();
 bool    latchFired();
 unsigned long latchLaunchTime();
 void    latchClear();
+void    latchBootInit();
+bool    latchLaunchElapsed(uint32_t &elapsedMs);
+// Prelaunch session timing is independent of the original in-flight clock.
+void    latchStartPrelaunch(uint32_t bootUptimeMs);
+bool    latchPrelaunchElapsed(uint32_t &elapsedMs);
+bool    latchDisarmed();
+void    latchSetDisarmed();

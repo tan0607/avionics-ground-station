@@ -29,3 +29,11 @@ struct HostSerial {
   template <typename T> void println(T, int) {}
 };
 extern HostSerial Serial;
+
+#define IRAM_ATTR
+using portMUX_TYPE = int;
+#define portMUX_INITIALIZER_UNLOCKED 0
+inline void portENTER_CRITICAL(portMUX_TYPE*) {}
+inline void portEXIT_CRITICAL(portMUX_TYPE*) {}
+inline void portENTER_CRITICAL_ISR(portMUX_TYPE*) {}
+inline void portEXIT_CRITICAL_ISR(portMUX_TYPE*) {}

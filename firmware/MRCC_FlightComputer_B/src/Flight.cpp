@@ -23,10 +23,26 @@ unsigned long apogeeTime = 0;
 bool timerBackupUsed = false;
 
 static unsigned long lastFlightTick = 0;
+static uint32_t launchElapsedAtRecovery = 0;
+static bool recoveredInFlight = false;
+
+static uint64_t elapsedSinceLaunch() {
+  return static_cast<uint64_t>(launchElapsedAtRecovery) +
+    static_cast<uint32_t>(millis() - launchTime);
+}
 static unsigned long stillSince     = 0;
 static unsigned long lastStillImuUpdate = 0;
 static bool stillWindowActive = false;
 static bool bootDelayComplete = false;
+static uint32_t prelaunchElapsedAtBoot = 0;
+static unsigned long prelaunchBootAnchor = 0;
+
+static unsigned long prelaunchDelayRemaining() {
+  if (bootDelayComplete) return 0;
+  const uint64_t elapsed = static_cast<uint64_t>(prelaunchElapsedAtBoot) +
+    static_cast<uint32_t>(millis() - prelaunchBootAnchor);
+  return elapsed >= AUTO_ARM_DELAY ? 0 : AUTO_ARM_DELAY - elapsed;
+}
 static unsigned long burnoutSince   = 0;
 static unsigned long landRefTime    = 0;
 static unsigned long padSince       = 0;
@@ -81,12 +97,9 @@ const char* stateName(uint8_t s) {
 // the charge has already gone, knowing never to fire
 // again.
 //
-// One honest caveat: millis() restarts at zero after a
-// reset, so the recovered launch time is meaningless.
-// The timer backup is therefore restarted from the
-// reset, which makes it LATE. The barometer stays the
-// primary detector across a reset, which is the real
-// reason it is worth having.
+// A retained launch RTC counter preserves elapsed flight time across warm
+// resets. millis() is only a boot-local anchor. The original launch calibration
+// is retained too; recalibrating at boot must not move the deadline.
 // =====================================================
 
 // A board that arms without being asked must say so at
@@ -95,7 +108,7 @@ const char* stateName(uint8_t s) {
 // live state machine behind them.
 static void announceAutoArm() {
 #if AUTO_ARM_ENABLED
-  Serial.print("[FLIGHT] AUTO-ARM is ON - minimum boot wait ");
+  Serial.print("[FLIGHT] AUTO-ARM is ON - minimum power-session wait ");
   Serial.print(AUTO_ARM_DELAY / 1000);
   Serial.print(" s AND ");
   Serial.print(PAD_STILL_TIME / 1000);
@@ -112,25 +125,30 @@ void initFlight(bool verbose) {
   padSince    = millis();
   stillWindowActive = false;
   lastStillImuUpdate = 0;
-  bootDelayComplete = millis() >= AUTO_ARM_DELAY;
+  autoArmBlocked = latchDisarmed();
 
-  if (!latchValid()) {
-    if (verbose) {
-      Serial.println("[FLIGHT] Clean start - state PAD");
-      announceAutoArm();
-    }
-    latchWrite(FS_PAD, false, 0);
-    return;
-  }
-
+  const bool validRecord = latchValid();
   uint8_t saved = latchState();
 
-  if (saved <= FS_ARMED) {
+  if (!validRecord || saved <= FS_ARMED) {
+    uint32_t elapsed = 0;
+    const bool resumed = validRecord && latchPrelaunchElapsed(elapsed);
+    // Anchor AFTER reading RTC elapsed: time spent validating the record must
+    // not be added twice and shorten the minimum waiting period.
+    prelaunchBootAnchor = millis();
+    prelaunchElapsedAtBoot = resumed ? elapsed : static_cast<uint32_t>(prelaunchBootAnchor);
+    bootDelayComplete = prelaunchElapsedAtBoot >= AUTO_ARM_DELAY;
+    // Restore waiting progress only. Each boot must establish fresh IMU
+    // stillness and calibration before arming; never restore prelaunch ARMED.
+    latchWrite(FS_PAD, latchFired(), 0);
+    if (!resumed) latchStartPrelaunch(static_cast<uint32_t>(prelaunchBootAnchor));
     if (verbose) {
-      Serial.println("[FLIGHT] Latch says pre-launch - state PAD");
+      Serial.println(resumed ? "[FLIGHT] Prelaunch wait recovered - state PAD" :
+        "[FLIGHT] No valid prelaunch clock - full boot wait, state PAD");
+      if (autoArmBlocked) Serial.println("[FLIGHT] Operator disarm retained - auto-arm blocked");
       announceAutoArm();
+      printArmReadiness();
     }
-    latchWrite(FS_PAD, false, 0);
     return;
   }
 
@@ -144,17 +162,26 @@ void initFlight(bool verbose) {
     flightState = FS_DESCENT;
     apogeeTime  = millis();
 
-    Serial.println("* The charge has ALREADY been fired.");
+    Serial.println("* A fire request was latched; deployment is NOT confirmed.");
     Serial.println("* Coming up in DESCENT, pyro stays SAFE.");
   }
   else {
     flightState = saved;
-    launchTime  = millis();          // see caveat above
+    launchTime = millis(); // boot-local anchor, not a replacement launch event
+    recoveredInFlight = true;
+    if (latchLaunchElapsed(launchElapsedAtRecovery)) {
+      Serial.print("* Original launch clock recovered; elapsed ms=");
+      Serial.println(launchElapsedAtRecovery);
+    } else {
+      // Preserve the previous fallback only when timing cannot be recovered.
+      // This is degraded operation, NOT a claim of deadline preservation.
+      launchElapsedAtRecovery = 0;
+      Serial.println("* WARNING: invalid retained clock; backup restarts, may be late.");
+    }
     pyroArmed   = true;              // it is in the air - do NOT ask
 
-    Serial.println("* The charge has NOT fired yet.");
+    Serial.println("* No prior fire request is latched.");
     Serial.println("* Re-arming automatically and continuing.");
-    Serial.println("* Timer backup restarted from this reset.");
   }
 
   Serial.println("****************************************");
@@ -190,8 +217,7 @@ ArmReadiness armReadiness() {
   const bool imuUsable = imuOK && lastImuUpdate != 0 &&
     now - lastImuUpdate <= PAD_IMU_MAX_GAP &&
     isfinite(accelMag) && isfinite(gyroMag);
-  const unsigned long delayLeft = bootDelayComplete || now >= AUTO_ARM_DELAY
-    ? 0 : AUTO_ARM_DELAY - now;
+  const unsigned long delayLeft = prelaunchDelayRemaining();
   // Advance only to the last OBSERVED sample, never along a held value.
   const unsigned long observed = imuUsable && stillWindowActive
     ? lastStillImuUpdate - stillSince : 0;
@@ -269,6 +295,7 @@ void disarmFlight() {
   // Only a power cycle clears it. That is the point: on the
   // pad, "I disarmed this" must not quietly expire.
   autoArmBlocked = true;
+  if (flightState <= FS_ARMED) latchSetDisarmed();
 
   if (flightState == FS_ARMED) {
     enterState(FS_PAD);
@@ -571,7 +598,7 @@ void serviceFlight() {
     // PAD - track stillness and the ground reference
     // -------------------------------------------------
     case FS_PAD: {
-      if (millis() >= AUTO_ARM_DELAY) bootDelayComplete = true;
+      if (prelaunchDelayRemaining() == 0) bootDelayComplete = true;
       const bool usable = imuOK && lastImuUpdate != 0 &&
         millis() - lastImuUpdate <= PAD_IMU_MAX_GAP &&
         isfinite(accelMag) && isfinite(gyroMag);
@@ -714,7 +741,7 @@ void serviceFlight() {
         burnoutSince = millis();
       }
 
-      if (millis() - launchTime > MOTOR_BURN_MAX) {
+      if (elapsedSinceLaunch() > MOTOR_BURN_MAX) {
         Serial.println("[FLIGHT] Burn time exceeded - forcing COAST");
         enterState(FS_COAST);
       }
@@ -727,7 +754,11 @@ void serviceFlight() {
     // Three independent guards. All three must pass.
     // -------------------------------------------------
     case FS_COAST: {
-      bool timeOK = (millis() - launchTime) >= MIN_COAST_TIME;
+      const uint64_t launchElapsed = elapsedSinceLaunch();
+      // Fresh barometric inference still needs the existing post-boot settle
+      // guard. An already expired backup must not wait through this guard.
+      bool timeOK = launchElapsed >= MIN_COAST_TIME &&
+        (!recoveredInFlight || millis() - padSince >= MIN_COAST_TIME);
       bool altOK  = baroOK && (maxAlt >= MIN_ALT_GAIN);
 
       // Each accepted sample counts once. Ordinary gaps hold the run;
@@ -747,7 +778,7 @@ void serviceFlight() {
       // Backup. Fires on the clock if the baro never
       // called it - a dead sensor must not mean a
       // ballistic recovery.
-      if (timeOK && (millis() - launchTime) >= APOGEE_TIMEOUT) {
+      if (launchElapsed >= APOGEE_TIMEOUT) {
         Serial.println("[FLIGHT] *** APOGEE TIMER BACKUP ***");
         timerBackupUsed = true;
         enterState(FS_APOGEE);
@@ -757,7 +788,7 @@ void serviceFlight() {
 
     // -------------------------------------------------
     // APOGEE - fire, then move straight on. The pulse
-    // itself is timed by servicePyro().
+    // itself is cut off by the independent GPTimer ISR.
     // -------------------------------------------------
     case FS_APOGEE: {
       apogeeAlt  = altFiltered;

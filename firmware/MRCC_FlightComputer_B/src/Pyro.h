@@ -12,15 +12,15 @@
 //   1. The gate is driven LOW before anything else in
 //      the whole program runs.
 //   2. Firing requires ARMED, and arming is a
-//      deliberate act that cannot happen in flight.
-//   3. The pulse is timed and non-blocking. The FET is
-//      never left latched on.
+//      prelaunch readiness decision (or retained in-flight recovery).
+//   3. A GPTimer ISR bounds the pulse independently of the main loop.
+//      This does not guarantee cutoff during interrupt masking or reset.
 //   4. Once fired, the RTC latch prevents a second
 //      fire for the rest of the flight - INCLUDING
 //      after a brownout reset.
 //
-// This module depends on nothing. It does not care
-// whether the SD card, radio or GPS are alive.
+// This module requires a working GPTimer, but not SD, radio or GPS.
+// The fired latch records an attempt, not confirmed deployment.
 // =====================================================
 
 extern bool pyroArmed;

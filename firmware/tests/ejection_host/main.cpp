@@ -6,20 +6,112 @@
 #include "Filters.h"
 #include "Flight.h"
 #include "Pyro.h"
+#include "driver/gptimer.h"
+#include "soc/rtc.h"
+#include "esp_private/esp_clk.h"
+#include "esp_system.h"
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#if defined(__SANITIZE_ADDRESS__)
+#define HOST_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define HOST_ASAN 1
+#endif
+#endif
+#ifdef HOST_ASAN
+#include <sanitizer/asan_interface.h>
+#endif
 
 unsigned long hostNowMs = 0;
 HostSerial Serial;
+static std::string timerFail;
+static uint64_t hostOriginalLaunchTicks = 0;
+struct host_timer {
+  bool enabled = false, running = false;
+  uint64_t due = 0, count = 0, alarm = 0;
+  gptimer_event_callbacks_t callbacks{};
+};
+static host_timer hostTimer;
+static int timerResult(const char* op) { return timerFail == op ? ESP_FAIL : ESP_OK; }
+esp_err_t gptimer_new_timer(const gptimer_config_t*, gptimer_handle_t* out) {
+  if (timerResult("new")) return ESP_FAIL;
+  hostTimer = {}; *out = &hostTimer; return ESP_OK;
+}
+esp_err_t gptimer_register_event_callbacks(gptimer_handle_t t, const gptimer_event_callbacks_t* c, void*) {
+  if (timerResult("callback")) return ESP_FAIL;
+  t->callbacks = *c; return ESP_OK;
+}
+esp_err_t gptimer_enable(gptimer_handle_t t) { if (timerResult("enable")) return ESP_FAIL; t->enabled = true; return ESP_OK; }
+esp_err_t gptimer_disable(gptimer_handle_t t) { t->enabled = false; return ESP_OK; }
+esp_err_t gptimer_del_timer(gptimer_handle_t) { return ESP_OK; }
+esp_err_t gptimer_stop(gptimer_handle_t t) { t->running = false; return ESP_OK; }
+esp_err_t gptimer_set_raw_count(gptimer_handle_t t, uint64_t n) { if (timerResult("count")) return ESP_FAIL; t->count = n; return ESP_OK; }
+esp_err_t gptimer_set_alarm_action(gptimer_handle_t t, const gptimer_alarm_config_t* c) {
+  if (timerResult("alarm")) return ESP_FAIL;
+  t->alarm = c ? c->alarm_count : 0; return ESP_OK;
+}
+esp_err_t gptimer_start(gptimer_handle_t t) {
+  if (timerResult("start") || !t->enabled) return ESP_FAIL;
+  t->running = true; t->due = hostNowMs + (t->alarm - t->count) / 1000; return ESP_OK;
+}
+static void advanceTime(unsigned long next) {
+  if (hostTimer.running && hostTimer.alarm && hostTimer.due <= next) {
+    hostNowMs = hostTimer.due;
+    hostTimer.alarm = 0; // one shot; counter keeps running until main stops it
+    hostTimer.callbacks.on_alarm(&hostTimer, nullptr, nullptr);
+  }
+  hostNowMs = next;
+}
 static int gate = LOW;
 static unsigned long rises = 0;
 static unsigned long falls = 0;
 static unsigned long imuSamples = 0;
 static unsigned long baroSamples = 0;
 static char noseAxis = 'z'; // legacy tests; MOUNT y selects confirmed A/B install
+
+#ifdef __APPLE__
+extern unsigned char hostRtcStart[] asm("section$start$__DATA$mrcc_rtc");
+extern unsigned char hostRtcEnd[] asm("section$end$__DATA$mrcc_rtc");
+#else
+extern unsigned char hostRtcStart[] asm("__start_mrcc_rtc");
+extern unsigned char hostRtcEnd[] asm("__stop_mrcc_rtc");
+#endif
+static size_t rtcImageSize() {
+  return reinterpret_cast<uintptr_t>(hostRtcEnd) - reinterpret_cast<uintptr_t>(hostRtcStart);
+}
+static bool rtcByteIsPadding(size_t i) {
+#ifdef HOST_ASAN
+  // Host ASan inserts redzones between globals. They are not RTC payload and
+  // must never be copied. Keep sanitizer checks enabled for all actual data.
+  return __asan_address_is_poisoned(hostRtcStart + i);
+#else
+  (void)i;
+  return false;
+#endif
+}
+static std::string rtcImage() {
+  const char* hex = "0123456789abcdef";
+  std::string image;
+  for (size_t i = 0; i < rtcImageSize(); ++i) {
+    const unsigned char value = rtcByteIsPadding(i) ? 0 : hostRtcStart[i];
+    image += hex[value >> 4];
+    image += hex[value & 15];
+  }
+  return image;
+}
+static void restoreRtc(const std::string& image) {
+  if (image.size() != rtcImageSize() * 2 ||
+      image.find_first_not_of("0123456789abcdef") != std::string::npos)
+    throw std::runtime_error("invalid RTC image");
+  for (size_t i = 0; i < rtcImageSize(); ++i) {
+    if (!rtcByteIsPadding(i))
+      hostRtcStart[i] = static_cast<unsigned char>(std::stoul(image.substr(i * 2, 2), nullptr, 16));
+  }
+}
 
 static void snapshot(const std::string& kind, const std::string& label = "") {
   const ArmReadiness ready = armReadiness();
@@ -49,7 +141,10 @@ static void snapshot(const std::string& kind, const std::string& label = "") {
     << ",\"latch_valid\":" << latchValid()
     << ",\"latch_state\":" << static_cast<int>(latchState())
     << ",\"latch_fired\":" << latchFired()
-    << ",\"latch_launch_ms\":" << latchLaunchTime() << "}\n";
+    << ",\"rtc_ticks\":" << rtc_time_get()
+    << ",\"launch_ticks\":" << hostOriginalLaunchTicks
+    << ",\"latch_launch_ms\":" << latchLaunchTime()
+    << ",\"rtc_image\":\"" << rtcImage() << "\"}\n";
 }
 
 void pinMode(int, int) {}
@@ -66,21 +161,43 @@ void digitalWrite(int pin, int value) {
 int main() {
   try {
     bool booted = false;
+    bool retainedImageLoaded = false;
     std::string line;
     while (std::getline(std::cin, line)) {
       if (line.empty()) continue;
       std::istringstream in(line);
       std::string command;
       in >> command;
-      if (command == "BOOT") {
+      if (command == "RESET_REASON") {
+        in >> hostResetReason;
+      } else if (command == "RTC_LOAD") {
+        std::string image;
+        if (booted || retainedImageLoaded || !(in >> image))
+          throw std::runtime_error("RTC_LOAD must precede BOOT");
+        restoreRtc(image);
+        retainedImageLoaded = true;
+      } else if (command == "RTC_CAL") {
+        if (booted || !(in >> hostCalibration)) throw std::runtime_error("invalid RTC_CAL");
+      } else if (command == "TIMER_FAIL") {
+        in >> timerFail;
+      } else if (command == "BOOT") {
         unsigned long bootMs, savedLaunch;
         int savedState, savedFired;
         if (booted || !(in >> bootMs >> savedState >> savedFired >> savedLaunch))
           throw std::runtime_error("invalid BOOT");
         // Reconstruct a valid retained latch in a fresh process. All other
         // firmware globals/statics retain their genuine startup initializers.
-        if (savedState >= 0)
-          latchWrite(static_cast<uint8_t>(savedState), savedFired != 0, savedLaunch);
+        uint64_t savedTicks = savedLaunch * 1000ULL, nowTicks = savedTicks + bootMs * 1000ULL;
+        if (in.peek() != EOF) in >> savedTicks >> nowTicks;
+        if (savedState >= 0) {
+          hostOriginalLaunchTicks = savedTicks;
+          hostNowMs = savedLaunch;
+          hostRtcOffsetUs = savedTicks - hostNowMs * 1000ULL;
+          if (!retainedImageLoaded)
+            latchWrite(static_cast<uint8_t>(savedState), savedFired != 0, savedLaunch);
+        }
+        hostNowMs = bootMs;
+        hostRtcOffsetUs = savedState >= 0 ? nowTicks - bootMs * 1000ULL : 0;
         pyroSafeInit();
         hostNowMs = bootMs; // setup's initial delay; sensor init delays excluded
         initPyro(false);
@@ -101,7 +218,7 @@ int main() {
                  >> baroHealthy >> freshImu >> freshBaro >> reseeded)
             || next <= hostNowMs)
           throw std::runtime_error("invalid or non-monotonic STEP");
-        hostNowMs = next;
+        advanceTime(next);
         servicePyro(); // same ordering as the flight sketch's loop
         imuOK = imuHealthy != 0;
         baroOK = baroHealthy != 0;
@@ -126,6 +243,7 @@ int main() {
         if (reseeded) baroReseeded = true;
         const auto before = flightState;
         serviceFlight();
+        if (before == FS_ARMED && flightState == FS_BOOST) hostOriginalLaunchTicks = rtc_time_get();
         if (before != flightState) snapshot("state");
       } else if (command == "SNAP") {
         std::string label;
@@ -137,6 +255,13 @@ int main() {
       } else if (command == "DISARM") {
         disarmFlight();
         snapshot("disarm");
+      } else if (command == "WAIT") {
+        unsigned long next;
+        if (!(in >> next) || next <= hostNowMs) throw std::runtime_error("invalid WAIT");
+        advanceTime(next); // interrupts only; application loop is not serviced
+      } else if (command == "TEST_FIRE") {
+        testFirePyro();
+        snapshot("test_fire");
       } else if (command == "TRY_FIRE") {
         firePyro("HOST GUARD TEST");
         snapshot("try_fire");

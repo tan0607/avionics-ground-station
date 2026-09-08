@@ -26,7 +26,7 @@ export function FlightTimeline({ state }: { state: FlightState | null }) {
   const activeIdx = state == null ? -1 : ORDER.indexOf(state)
 
   return (
-    <Card className="min-h-0 flex-1 overflow-hidden">
+    <Card className="min-h-fit flex-1">
       <div className="border-b border-hairline px-4 py-2">
         <span className="text-[0.625rem] uppercase tracking-[0.16em] text-ink-mute">Flight State</span>
       </div>

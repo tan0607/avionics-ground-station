@@ -141,9 +141,8 @@ void loop() {
 
   // Nothing below this line is allowed to block.
 
-  // The pyro pulse is timed here and nowhere else, so
-  // it runs first and is never delayed by anything
-  // below it.
+  // The GPTimer ISR independently cuts the pyro pulse LOW. Service it first
+  // here for cleanup and a secondary LOW fallback; later loop work can stall.
   servicePyro();
 
   readGPS();

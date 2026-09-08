@@ -52,7 +52,7 @@ def compile_host(vehicle: str, directory: Path) -> Path:
 
 def source_hashes(vehicle: str) -> dict[str, str]:
     source = FIRMWARE / f"MRCC_FlightComputer_{vehicle}/src"
-    paths = [Path(__file__), *HOST.glob("*.*"), source / "Config.h"]
+    paths = [Path(__file__), *HOST.rglob("*.*"), source / "Config.h"]
     paths += [source / f"{m}.{ext}" for m in MODULES for ext in ("cpp", "h")]
     return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(paths)}

@@ -186,14 +186,14 @@ function App() {
         />
 
         {view === "live" && (
-          <>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto" role="region" aria-label="Live telemetry" tabIndex={0}>
             <KpiRow frame={telemetry.frame} maxAltM={telemetry.maxAltM} />
             <AuxReadouts frame={telemetry.frame} />
             <div className="shrink-0 px-2 pt-2">
               <ArmingStatus key={mission.mission.name} frame={telemetry.frame} link={telemetry.link} />
             </div>
 
-            <main className="grid min-h-0 flex-1 grid-cols-[1fr_17rem] gap-2 p-2">
+            <main className="grid flex-1 shrink-0 grid-cols-[1fr_17rem] gap-2 p-2">
               {/* sensor-chart column */}
               <div className="flex min-h-0 min-w-0 flex-col gap-2">
                 <ChartCard
@@ -257,13 +257,13 @@ function App() {
               </div>
 
               {/* safety + phase */}
-              <div className="flex min-h-0 flex-col gap-2">
+              <div className="flex flex-col gap-2">
                 <GoNoGo frame={telemetry.frame} />
                 <SubsystemHealth frame={telemetry.frame} onboardLog={onboardLog} />
                 <FlightTimeline state={telemetry.frame?.flightState ?? null} />
               </div>
             </main>
-          </>
+          </div>
         )}
 
         {view === "map" && (

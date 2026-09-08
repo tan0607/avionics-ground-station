@@ -4,7 +4,7 @@ Separate flight computer sketches for vehicles A and B, plus the ground station.
 
 ### A/B auto-arm and dashboard countdown (2026-09-07)
 
-Normal prelaunch arming requires all three: **180 s of boot uptime**, **the
+Normal prelaunch arming requires all three: **the original 180 s power-session wait**, **the
 latest 10 s of observed still IMU data**, and **completed gyro calibration**.
 The two clocks run concurrently, not 180 + 10 s in sequence. Stillness retains
 the existing limits: acceleration magnitude within 0.5 m/s² of gravity and gyro
@@ -14,10 +14,22 @@ not advance the stillness timer. A gap over 250 ms breaks the PAD observation
 window and any partially collected gyro-calibration batch.
 
 Failed gyro calibration retries only in unarmed PAD, without a console command.
-`X` blocks auto-arm until reboot; the manual `A` path does not bypass the delay,
-IMU, calibration or operator-block gates. A prelaunch reboot restarts the boot
-delay. In-flight reset recovery and post-arming launch/ejection logic are
-unchanged. **PAD does not detect launch: confirm ARMED before launching.**
+`X` blocks auto-arm across valid warm resets until a power-on starts a new session;
+the manual `A` path does not bypass the delay, IMU, calibration or operator-block gates.
+A valid prelaunch RTC record preserves the original 180 s deadline through a warm
+reset, including restart downtime. Reboot still returns to PAD and rebuilds the
+10 s observed stillness window and gyro calibration. POWERON, a missing/invalid
+record, or invalid retained timing restarts the full boot wait. An intact disarm
+flag remains blocked even if its saved clock is invalid. **PAD does not detect
+launch: confirm ARMED before launching, including after a reset.**
+
+For example, a reset after 170 s does not start another 180 s timer, but reboot
+sensor initialization and a new 10 s stationary window can extend the time until
+ARMED. A loose power connection may cause total loss of retained state; warm-reset
+recovery does not guarantee recovery from that fault. Firmware does not restore
+an old armed session from Flash/NVS after a power cycle.
+
+Implementation and evidence: [prelaunch reset recovery](../docs/validation/2026-09-08-prelaunch-reset-recovery.md).
 
 The Live dashboard's arming strip uses the onboard report, not a browser timer.
 It shows the earliest remaining time and blocking reasons. `ARMED confirmed`
@@ -27,7 +39,7 @@ the existing 3 s freshness window. Missing/invalid fields show countdown
 unavailable (including older firmware). Confirmation is visual; no new audible
 alert or hardware buzzer is implemented.
 
-PAD packets append `AW` (blocker bitmask), `AD` (boot-delay seconds remaining),
+PAD packets append `AW` (blocker bitmask), `AD` (prelaunch-delay seconds remaining),
 and `AS` (stillness seconds remaining), rounded **up** to whole seconds. AW bits:
 1 delay, 2 stillness, 4 gyro calibration, 8 unavailable/stale IMU, 16 operator
 block, 32 auto-arm disabled, 64 fired latch, 128 arming interlock. The three-field
@@ -41,6 +53,34 @@ for verified hardware isolation. Firmware must be flashed and bench-validated
 separately; a build or host simulation is not flight readiness. See
 `docs/validation/2026-09-07-auto-arm-countdown.md` for evidence and remaining
 reset/pulse safety findings.
+
+### Post-launch reset and pulse cutoff (2026-09-08)
+
+After detected launch, a valid retained RTC launch counter/calibration restores
+elapsed flight time through warm reset, including restart downtime. The 19 s
+backup does not start over. Normal barometric recovery retains its 1.5 s
+post-initialization guard; an already expired backup proceeds at flight-service
+cadence once startup finishes. Slow sensor/SD initialization can still delay it.
+
+The latch now uses versioned/checksummed `RTC_NOINIT_ATTR` storage. Power-on resets
+clear it. Invalid retained timing retains the old restarted-backup fallback with
+an explicit serial warning; invalid latch/full power loss cannot recover flight
+history. Reset reason describes a hardware/firmware cause, not whether an operator
+intended to switch power off. Legacy boot/brownout counters are not proof of latch
+retention and were not redesigned in this update.
+
+A checked GPTimer interrupt lowers the output independently of the application
+loop. Failed timer initialization/preparation/start never intentionally raises
+the gate; repeated bench commands cannot extend an active pulse. Startup LOW,
+disarm LOW and the no-refire latch remain. `FI` means a fire attempt was latched,
+not that current flowed or the parachute deployed. Reset partway through a pulse
+still cuts it short and does not automatically refire.
+
+Compiled with Arduino-ESP32 3.3.11. The RTC clock implementation uses ESP32-S3 SDK
+clock APIs and retains the launch calibration across reboot. Validate timing and
+retention on the actual board; host interrupt tests do not establish electrical
+pulse duration, behavior under masked interrupts, or actual deployment.
+Evidence: [post-launch reset/pulse validation](../docs/validation/2026-09-08-postlaunch-reset-pulse.md).
 
 ### Confirmed A/B installation (2026-09-06)
 

@@ -26,7 +26,11 @@ class Timeline:
         self.ms = 1500
         self.commands = ["BOOT 1500 " + (
             f'{latch["latch_state"]} {latch["latch_fired"]} {latch["latch_launch_ms"]}'
+            + (f' {latch["launch_ticks"]} {latch["rtc_ticks"] + 1500000}'
+               if "launch_ticks" in latch else "")
             if latch else "-1 0 0")]
+        if latch and "rtc_image" in latch:
+            self.commands.insert(0, "RTC_LOAD " + latch["rtc_image"])
 
     def step(self, ms, altitude=100, accel=1, gyro=0, imu=True, baro=True,
              fresh_imu=True, fresh_baro=True, reseed=False):
@@ -84,7 +88,7 @@ class EjectionSimulationTest(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.binaries = {}
         cls.evidence = []
-        files = [Path(__file__), *HOST.glob("*.*")]
+        files = [Path(__file__), *HOST.rglob("*.*")]
         for vehicle in ("A", "B"):
             src = FIRMWARE / f"MRCC_FlightComputer_{vehicle}" / "src"
             files.extend(src / f"{module}.{extension}" for module in
@@ -164,6 +168,96 @@ class EjectionSimulationTest(unittest.TestCase):
                 self.assertAlmostEqual(end["roll"], 0, places=4)
                 self.assertIn("baro_input", end)
                 self.assertIn("imu_ok", end)
+
+    def test_timer_cuts_output_without_any_loop_service(self):
+        for vehicle in self.binaries:
+            with self.subTest(vehicle=vehicle):
+                t = Timeline().hold(LIFTOFF_MS).fly()
+                fire, = events_of(self.simulate(vehicle, t), "rise")
+                t = Timeline().hold(LIFTOFF_MS).fly(until=fire["ms"])
+                t.commands += [f'WAIT {fire["ms"] + 900}', "SNAP stalled"]
+                events = self.simulate(vehicle, t)
+                self.assertEqual(events[-1]["gate"], 0)
+                fall, = events_of(events, "fall")
+                self.assertEqual(fall["ms"] - fire["ms"], 400)
+
+    def test_timer_failures_never_raise_gate(self):
+        for vehicle in self.binaries:
+            for failure in ("new", "callback", "enable", "count", "alarm", "start"):
+                with self.subTest(vehicle=vehicle, failure=failure):
+                    t = Timeline().hold(LIFTOFF_MS).fly()
+                    t.commands.insert(0, f"TIMER_FAIL {failure}")
+                    t.commands += ["SNAP end"]
+                    end = self.simulate(vehicle, t)[-1]
+                    self.assertEqual(end["rises"], 0)
+                    self.assertEqual(end["gate"], 0)
+
+    def test_bench_pulse_cannot_be_extended_by_repeat_command(self):
+        for vehicle in self.binaries:
+            with self.subTest(vehicle=vehicle):
+                events = self.simulate(vehicle, ["BOOT 1500 -1 0 0", "TEST_FIRE",
+                    "WAIT 1700", "TEST_FIRE", "WAIT 2400", "SNAP end"])
+                rise, = events_of(events, "rise")
+                fall, = events_of(events, "fall")
+                self.assertEqual(fall["ms"] - rise["ms"], 400)
+
+    def test_repeated_reset_keeps_original_backup_deadline(self):
+        for vehicle in self.binaries:
+            with self.subTest(vehicle=vehicle):
+                t = Timeline().hold(LIFTOFF_MS).fly(until=207000, baro_loss_ms=205000).mark("reset")
+                first = self.simulate(vehicle, t)[-1]
+                t = Timeline(latch=first).hold(5000, baro=False, accel=0).mark("reset")
+                second = self.simulate(vehicle, t)[-1]
+                t = Timeline(latch=second).hold(23000, baro=False, accel=0)
+                fire, = events_of(self.simulate(vehicle, t), "rise")
+                elapsed = (fire["rtc_ticks"] - first["launch_ticks"]) / 1000
+                self.assertGreaterEqual(elapsed, 19000)
+                self.assertLessEqual(elapsed, 19100)
+
+    def test_expired_backup_after_reset_does_not_wait_another_19_seconds(self):
+        for vehicle in self.binaries:
+            with self.subTest(vehicle=vehicle):
+                first = self.simulate(vehicle, Timeline().hold(LIFTOFF_MS)
+                    .fly(until=218000, baro_loss_ms=205000).mark("reset"))[-1]
+                # Reset downtime carries the clock past the original deadline.
+                events = self.simulate(vehicle, Timeline(latch=first)
+                    .hold(2200, baro=False, accel=0))
+                fire, = events_of(events, "rise")
+                self.assertLessEqual(fire["ms"], 1610)
+                self.assertEqual(fire["reason"], "TIMER BACKUP")
+
+    def test_invalid_retained_clock_keeps_explicit_legacy_fallback(self):
+        for vehicle in self.binaries:
+            with self.subTest(vehicle=vehicle):
+                t = Timeline(latch={"latch_state": 3, "latch_fired": 0,
+                    "latch_launch_ms": 200000, "launch_ticks": 200000000,
+                    "rtc_ticks": 0})
+                t.hold(23000, baro=False, accel=0)
+                fire, = events_of(self.simulate(vehicle, t), "rise")
+                self.assertGreaterEqual(fire["ms"], 20500)
+                self.assertLessEqual(fire["ms"], 20600)
+
+    def test_power_on_ignores_even_valid_retained_flight(self):
+        for vehicle in self.binaries:
+            for fired in (0, 1):
+                with self.subTest(vehicle=vehicle, fired=fired):
+                    events = self.simulate(vehicle, ["RESET_REASON 1",
+                        f"BOOT 1500 3 {fired} 200000", "SNAP end"])
+                    self.assertEqual(events[-1]["state"], "PAD")
+                    self.assertFalse(events[-1]["fired"])
+                    self.assertFalse(events[-1]["armed"])
+                    self.assertEqual(events[-1]["rises"], 0)
+
+    def test_disarm_cancels_pulse_and_next_bench_pulse_has_own_deadline(self):
+        for vehicle in self.binaries:
+            with self.subTest(vehicle=vehicle):
+                events = self.simulate(vehicle, ["BOOT 1500 -1 0 0", "TEST_FIRE",
+                    "WAIT 1600", "DISARM", "WAIT 1700", "TEST_FIRE",
+                    "WAIT 1900", "SNAP old_deadline", "WAIT 2300", "SNAP end"])
+                self.assertEqual(marked(events, "old_deadline")["gate"], 1)
+                rises, falls = events_of(events, "rise"), events_of(events, "fall")
+                self.assertEqual(len(rises), 2)
+                self.assertEqual([f["ms"] - r["ms"] for r, f in zip(rises, falls)], [100, 400])
 
     def test_cold_boot_is_safe(self):
         for vehicle in self.binaries:
@@ -636,7 +730,7 @@ for _name, _check in (
     for _vehicle in ("A", "B"):
         def _test(self, check=_check, vehicle=_vehicle):
             check(self, vehicle)
-        if not STRICT_SAFETY and _name not in ("full_observed_settle_window", "fresh_launch_samples", "fresh_apogee_samples"):
+        if not STRICT_SAFETY and _name == "interrupted_pulse_not_lost":
             _test = unittest.expectedFailure(_test)
         setattr(EjectionSimulationTest, f"test_safety_{_name}_{_vehicle}", _test)
 
