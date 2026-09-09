@@ -17,7 +17,7 @@ struct Disk {
   bool loseOnClose = false, corruptOnClose = false;
   bool failSync = false, failClose = false;
   bool failReadOpen = false, failAppendOpen = false, failSeek = false;
-  bool failRead = false, shortNewline = false;
+  bool failRead = false, shortNewline = false, failStat = false;
   unsigned opens = 0, closes = 0, readBytes = 0;
 };
 struct Handle {
@@ -28,7 +28,10 @@ struct Handle {
 };
 struct FakeFile {
   std::shared_ptr<Handle> h;
-  explicit operator bool() const { return h && h->open; }
+  // Mirrors CheckedLogFile: a handle can still own its file after an error and
+  // still be useless for I/O. Only isOpen() answers "must this be closed?".
+  explicit operator bool() const { return isOpen() && ioError == 0; }
+  bool isOpen() const { return h && h->open; }
   size_t write(const uint8_t* p, size_t n) {
     if (!*this || !h->append) return 0;
     if (h->disk->shortNewline && n == 2 && p[0] == '\r') --n;
@@ -51,12 +54,20 @@ struct FakeFile {
     }
     return out;
   }
-  size_t size() const { return h->contents.size(); }
+  bool querySize(size_t& out) const {
+    out = 0;
+    if (!isOpen() || h->disk->failStat) { statError = EBADF; return false; }
+    statError = 0;
+    out = h->contents.size();
+    return true;
+  }
+  int statErrorNumber() const { return statError; }
   int ioError = 0;
+  mutable int statError = 0;
   int errorNumber() const { return ioError; }
   bool flush() { if (h->disk->failSync) { ioError = EIO; return false; } return true; }
   bool close() {
-    if (!*this) return true;
+    if (!isOpen()) return true;
     auto& d = *h->disk;
     if (h->append && !d.loseOnClose) {
       d.bytes = h->contents;
@@ -109,11 +120,43 @@ int main(int argc, char** argv) {
     require(checkpoint.verifiedLines() == 0, "accepted write advertised as persisted");
     if (scenario == "partial_newline") {
       require(!accepted, "partial CRLF was accepted as a complete CSV row");
+      require(checkpoint.expectedBytes() == 8 + row.size() + 1,
+              "bytes the filesystem accepted are missing from the expected size");
       require(!checkpoint.commit(file, fs, "/FLIGHT003.CSV"), "partial write committed");
       require(checkpoint.verifiedLines() == 0, "partial row counted");
       return 0;
     }
     require(accepted, "ordinary append failed");
+    if (scenario == "status_stat") {
+      // The reported failure came from a status line calling size() on the
+      // writer. Asking how big the file is must never stop the log.
+      fs.disk.failStat = true;
+      size_t ignored = 1;
+      require(!file.querySize(ignored) && ignored == 0, "stat failure not injected");
+      require(file.statErrorNumber() == EBADF, "stat errno lost");
+      require(bool(file) && file.errorNumber() == 0, "a size report disabled the writer");
+      fs.disk.failStat = false;
+      require(checkpoint.append(file, row.c_str(), row.size()),
+              "append refused after an unrelated size report failed");
+      require(checkpoint.commit(file, fs, "/FLIGHT003.CSV"),
+              "checkpoint refused after an unrelated size report failed");
+      require(checkpoint.verifiedLines() == 2, "rows lost after a failed size report");
+      return 0;
+    }
+    if (scenario == "dead_handle") {
+      // What SD.end() does to a descriptor that is still open: the fd is still
+      // held, every write returns EBADF, and nothing reaches the card.
+      file.ioError = EBADF;
+      require(!file && file.isOpen(), "an unwritable handle still tested as writable");
+      LogCheckpoint dead;
+      dead.reset(8);
+      require(!dead.append(file, row.c_str(), row.size()), "dead handle accepted a row");
+      require(std::string(dead.error()) == "append handle",
+              "a write that never happened was reported as a short write");
+      require(dead.ioErrorNumber() == EBADF, "dead handle lost the real errno");
+      require(dead.expectedBytes() == 8, "nothing was written, so nothing is expected");
+      return 0;
+    }
     if (scenario == "volatile") {
       file.powerLoss();
       require(fs.disk.bytes == "header\r\n", "fake accidentally persisted before close");

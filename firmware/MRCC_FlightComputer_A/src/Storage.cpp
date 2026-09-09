@@ -28,6 +28,7 @@ static unsigned long lastLog   = 0;
 static bool cardIsHighCapacity = false;
 
 static void logOneLine();
+static void closeLogBeforeUnmount();
 static bool testMisoLine(bool verbose);
 static bool testCardHandshake(bool verbose);
 static void verifyWrite();
@@ -274,6 +275,9 @@ bool initSD(bool verbose) {
     Serial.println(SD_MISO);
   }
 
+  // Before the probe below unmounts the card. See closeLogBeforeUnmount().
+  closeLogBeforeUnmount();
+
   sdOK = false;
 
   if (!testMisoLine(verbose))      { if (verbose) printSdHelp(); return false; }
@@ -323,7 +327,7 @@ bool initSD(bool verbose) {
 void startNewLogFile() {
   if (!sdOK) return;
 
-  if (logFile) {
+  if (logFile.isOpen()) {
     flushSD();
     if (!sdOK) return;
     logFile.close();
@@ -405,8 +409,14 @@ static void verifyWrite() {
 
   uint8_t prefix[8];
   int received = f.read(prefix, sizeof(prefix));
-  unsigned long sizeOnCard = f.size();
+  size_t sizeOnCard = 0;
+  bool sized = f.querySize(sizeOnCard);
   bool closed = f.close();
+  if (!sized) {
+    Serial.print("[SD] VERIFY FAILED - cannot size the file | io_errno=");
+    Serial.println(f.statErrorNumber());
+    sdOK = false; return;
+  }
   if (!closed || f.errorNumber()) {
     Serial.print("[SD] VERIFY FAILED - header read/close | io_errno=");
     Serial.println(f.errorNumber());
@@ -414,7 +424,7 @@ static void verifyWrite() {
   }
 
   Serial.print("[SD] Read back ");
-  Serial.print(sizeOnCard);
+  Serial.print(static_cast<unsigned long>(sizeOnCard));
   Serial.println(" bytes from the card");
 
   if (received == 8 && memcmp(prefix, "PKT,T,GD", 8) == 0) {
@@ -435,7 +445,9 @@ static void verifyWrite() {
 static void storageFailure(const char* reason, int ioError) {
   sdErrorCount++;
   sdOK = false;
-  if (logFile) logFile.close();
+  // Unconditional: this runs precisely when the handle has just failed, and a
+  // descriptor left open here is one the next remount would strand for good.
+  logFile.close();
   Serial.print("[SD] CHECKPOINT/WRITE FAILED: ");
   Serial.print(reason);
   Serial.print(" | verified lines=");
@@ -473,7 +485,7 @@ void serviceLogging() {
 
 
 static void logOneLine() {
-  if (!sdOK || !logFile) return;
+  if (!sdOK || !logFile.isOpen()) return;
 
   char line[512];
 
@@ -510,7 +522,7 @@ static void logOneLine() {
 
 
 void flushSD() {
-  if (!sdOK || !logFile || !logCheckpoint.pending()) return;
+  if (!sdOK || !logFile.isOpen() || !logCheckpoint.pending()) return;
   unsigned long started = micros();
   bool ok = logCheckpoint.commit(logFile, LogFiles, logFileName);
   sdCheckpointLastUs = micros() - started;
@@ -521,6 +533,15 @@ void flushSD() {
   }
   // Only readback-verified rows are reported to serial and SDF/SDL/SDE.
   logLineCount = logCheckpoint.verifiedLines();
+}
+
+
+// SD.end() unregisters the /sd VFS. A descriptor still open across it becomes
+// permanently invalid - every later write, fsync and close returns EBADF, and
+// the card never sees the row. Anything that remounts calls this first.
+static void closeLogBeforeUnmount() {
+  if (sdOK) flushSD();   // best effort while the mount is still live
+  logFile.close();
 }
 
 
@@ -535,7 +556,7 @@ void dumpLogFile() {
     return;
   }
 
-  if (logFile) {
+  if (logFile.isOpen()) {
     flushSD();
     if (!sdOK) return;
     logFile.close();
@@ -649,7 +670,7 @@ void formatCard() {
 
   Serial.println("[SD] Formatting... do not unplug.");
 
-  if (logFile) logFile.close();
+  closeLogBeforeUnmount();
 
   SD.end();
   delay(200);

@@ -337,13 +337,21 @@ void printStatus() {
 
   if (imuOK) printFilterStatus();
 
-  if (sdOK && logFile) {
+  if (sdOK && logFile.isOpen()) {
     Serial.print("[SD]  ");
     Serial.print(logFileName);
     Serial.print(" | lines=");
     Serial.print(logLineCount);
+    // Reporting only: querySize() cannot mark the log failed, so a card that
+    // stops answering shows up in this field instead of stopping the log.
     Serial.print(" | bytes=");
-    Serial.print(logFile.size());
+    size_t bytesOnCard = 0;
+    if (logFile.querySize(bytesOnCard)) {
+      Serial.print(static_cast<unsigned long>(bytesOnCard));
+    } else {
+      Serial.print("? io_errno=");
+      Serial.print(logFile.statErrorNumber());
+    }
     Serial.print(" | rate=");
     Serial.print(logHz, 1);
     Serial.print("Hz | err=");

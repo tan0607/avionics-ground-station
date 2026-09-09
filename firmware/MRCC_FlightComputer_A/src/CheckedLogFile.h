@@ -34,7 +34,12 @@ class BasicCheckedLogFile {
     if (this != &other) { close(); take(other); }
     return *this;
   }
-  explicit operator bool() const { return fd_ >= 0; }
+  // Usable for I/O. A descriptor whose mount was torn down (SD.end()) or whose
+  // first error is already recorded still holds an fd, but nothing written to
+  // it can reach the card - so it must not test as a working file.
+  explicit operator bool() const { return fd_ >= 0 && error_ == 0; }
+  // Owns a descriptor. Cleanup and diagnostics run on failed handles too.
+  bool isOpen() const { return fd_ >= 0; }
   int errorNumber() const { return error_; }
 
   static BasicCheckedLogFile open(const char* path, int flags) {
@@ -79,18 +84,28 @@ class BasicCheckedLogFile {
     if (Ops::close(fd) != 0) { fail(errno); return false; }
     return true;
   }
-  size_t size() const {
+  // Deliberately does NOT record the sticky error: asking a file how big it is
+  // is also how the status line reports progress, and a failed report must not
+  // be able to stop the flight log. The caller is told instead.
+  bool querySize(size_t& out) const {
+    out = 0;
+    if (fd_ < 0) { statError_ = EBADF; return false; }
     struct stat info;
-    if (Ops::stat(fd_, &info) != 0) { fail(errno); return 0; }
-    if (info.st_size < 0) { fail(EIO); return 0; }
-    return static_cast<size_t>(info.st_size);
+    if (Ops::stat(fd_, &info) != 0) { statError_ = errno ? errno : EIO; return false; }
+    if (info.st_size < 0) { statError_ = EIO; return false; }
+    statError_ = 0;
+    out = static_cast<size_t>(info.st_size);
+    return true;
   }
+  int statErrorNumber() const { return statError_; }
   bool seek(size_t offset) {
+    if (fd_ < 0) { fail(EBADF); return false; }
     if (offset > static_cast<size_t>(LONG_MAX)) { fail(EOVERFLOW); return false; }
     if (Ops::seek(fd_, static_cast<off_t>(offset)) < 0) { fail(errno); return false; }
     return true;
   }
   int read(uint8_t* p, size_t n) {
+    if (fd_ < 0) { fail(EBADF); return -1; }
     if (n > INT_MAX) { fail(EOVERFLOW); return -1; }
     ssize_t received = Ops::read(fd_, p, n);
     if (received < 0) { fail(errno); return -1; }
@@ -100,10 +115,12 @@ class BasicCheckedLogFile {
  private:
   void fail(int code) const { if (!error_) error_ = code ? code : EIO; }
   void take(BasicCheckedLogFile& other) {
-    fd_ = other.fd_; error_ = other.error_; other.fd_ = -1;
+    fd_ = other.fd_; error_ = other.error_; statError_ = other.statError_;
+    other.fd_ = -1;
   }
   int fd_ = -1;
   mutable int error_ = 0;
+  mutable int statError_ = 0;
 };
 
 template <typename Ops = LogPosixOps>

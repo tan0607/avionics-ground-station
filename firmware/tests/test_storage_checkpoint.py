@@ -49,6 +49,8 @@ class StorageCheckpointTest(unittest.TestCase):
     def test_sync_failure_is_not_committed(self): self.scenario("sync_failure")
     def test_checked_close_failure_is_not_committed(self): self.scenario("close_failure")
     def test_partial_newline_is_not_a_successful_row(self): self.scenario("partial_newline")
+    def test_failed_size_report_does_not_stop_logging(self): self.scenario("status_stat")
+    def test_open_but_unwritable_handle_is_reported_as_such(self): self.scenario("dead_handle")
 
 
 class CheckedLogFileTest(unittest.TestCase):
@@ -82,6 +84,8 @@ class CheckedLogFileTest(unittest.TestCase):
     def test_write_failure_preserves_enospc(self): self.scenario("write_error")
     def test_fsync_failure_preserves_eio(self): self.scenario("sync_error")
     def test_close_failure_is_reported_and_releases_ownership(self): self.scenario("close_error")
+    def test_real_stat_failure_does_not_poison_the_writer(self): self.scenario("stat_error")
+    def test_real_dead_handle_is_not_reported_as_a_short_write(self): self.scenario("dead_handle")
 
 
 def definition(source, signature):
@@ -169,6 +173,32 @@ int main(int argc, char** argv) {{
     require(logLineCount == 10, "one-second checkpoint did not confirm ten rows");
     require(sdOK && sdErrorCount == 0, "successful checkpoint reported failure");
     const auto saved = LogFiles.disk.bytes;
+    if (scenario == "stranded_handle") {{
+      // What SD.end() does to a descriptor that is still open. The row must be
+      // reported as the dead handle it is, and the fd must not be left behind
+      // for the next remount to strand.
+      logFile.ioError = EBADF;
+      hostNowMs = 1100; tick();
+      require(!sdOK && sdErrorCount == 1, "a dead descriptor was not reported");
+      require(!logFile.isOpen(), "failed logger leaked its descriptor");
+      require(logLineCount == 10, "a row that was never written was counted");
+      require(LogFiles.disk.bytes == saved, "failure changed the durable batch");
+      return 0;
+    }}
+    if (scenario == "remount_teardown") {{
+      for (hostNowMs = 1100; hostNowMs <= 1400; hostNowMs += 100) tick();
+      require(logLineCount == 10, "pending rows counted before their checkpoint");
+      const unsigned closesBefore = LogFiles.disk.closes;
+      closeLogBeforeUnmount(); // what initSD()/formatCard() do before SD.end()
+      require(logLineCount == 14, "pending rows were not committed before the unmount");
+      require(!logFile.isOpen(), "a live descriptor was left open across the unmount");
+      require(LogFiles.disk.closes > closesBefore, "file was never closed before the unmount");
+      require(sdOK && sdErrorCount == 0, "a clean teardown reported an error");
+      const auto durable = LogFiles.disk.bytes;
+      require(std::count(durable.begin(), durable.end(), '\\n') == 16,
+              "not exactly header, boot, and fourteen complete rows");
+      return 0;
+    }}
     if (scenario == "idle_timing") {{
       sdCheckpointLastUs = 1234; sdCheckpointMaxUs = 2000;
       flushSD();
@@ -216,6 +246,8 @@ int main(int argc, char** argv) {{
                                         capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_remount_teardown_commits_and_closes_before_unmount(self): self.scenario("remount_teardown")
+    def test_dead_descriptor_is_reported_and_released(self): self.scenario("stranded_handle")
     def test_header_sync_failure_stops_logging(self): self.scenario("header_sync")
     def test_header_close_failure_stops_logging(self): self.scenario("header_close")
     def test_real_periodic_logger_persists_without_console(self): self.scenario("persist")

@@ -6,6 +6,80 @@ the first 257-byte data row did not appear in fresh readback. The current follow
 uses checked POSIX writes on the existing SD VFS mount. It has not been uploaded
 by the agent. Physical power-off persistence and loop timing remain outstanding.
 
+## Dead-descriptor root cause and fix
+
+The hardware report was
+`short write | verified lines=0 | file=/FLIGHT013.CSV | base=243 expected=243 actual=unknown
+pending=0 | io_errno=9`: the 243-byte header was written and verified, then the first data
+row never reached the card. `io_errno=9` is `EBADF`, and a genuinely short write reports
+`EIO`, so the descriptor was already invalid before that row - not a failing card.
+
+Three defects in the preceding revision produced and then misattributed it.
+
+- `operator bool` tested only `fd_ >= 0`, while `write()` short-circuits on the sticky
+  error and returns 0 without touching the card. A handle that could no longer write
+  still passed `LogCheckpoint::append`'s guard, so a write that never happened was
+  reported as a short one, carrying an errno left by an earlier, unrelated call.
+- `size()` was `const` but recorded that sticky error. Its only caller on the writer is
+  the serial status line, so a failed size report - pure diagnostics - permanently
+  disabled flight logging. This call predates the POSIX rewrite, when it was
+  `File::size()` and could not fail.
+- `initSD()` ran `SD.end()` with the log file still open. Unregistering the `/sd` VFS
+  invalidates every descriptor open across it; `startNewLogFile()` would then flush and
+  close that dangling descriptor. `initSD()` is reachable at runtime from console `I` and
+  from the 30 s SD auto-recovery, and `storageFailure()`'s conditional close leaked the
+  descriptor in exactly the case where it had just failed.
+
+A host reproduction using the real headers, a fake `Ops` whose `write()` always succeeds,
+and a failing `fstat` reproduced the reported line field-for-field. `vfs_fat_fstat` is
+present in `esp32s3-libs/3.3.11/lib/libfatfs.a`, so `fstat` on a live FAT descriptor is
+implemented; the size/checksum scheme was left unchanged and still uses it.
+
+Changes, applied identically to all four sketches:
+
+- `operator bool` now means usable for I/O (`fd_ >= 0 && error_ == 0`); the new `isOpen()`
+  means owns a descriptor, and cleanup and diagnostics use it. `size()` is replaced by
+  `querySize(size_t&)` plus `statErrorNumber()`, which never record the sticky error.
+- `LogCheckpoint::append` reports `append handle` with the real errno for a handle that
+  cannot write, and counts bytes the filesystem did accept toward `expected` so a partial
+  row is not hidden from the diagnostic.
+- `closeLogBeforeUnmount()` commits the pending batch and closes the writer before any
+  remount; `initSD()` and `formatCard()` call it first. `storageFailure()` now closes
+  unconditionally.
+- The status line prints `bytes=?` with `io_errno=` instead of a size it could not read,
+  and no longer stops the log by asking.
+
+Verification: focused checkpoint suite 30 tests OK (was 24), including a fail-first check
+that the descriptor-leak test fails against the previous conditional close. Full firmware
+suite 121 tests with the same two expected `test_safety_interrupted_pulse_not_lost_A/B`
+failures, plus one pre-existing environment error (`test_simulation_export` needs
+`fastapi`, not installed here); this is not a clean safety pass. HandMotionTest 13/13.
+The four-way Storage/Health/helper identity holds (Storage differs only in the
+FLIGHT/HAND prefix) and `git diff --check` is clean. The HandMotionTest baseline was
+refreshed for the eight intentionally changed production files; two stale `.DS_Store`
+entries for gitignored files that no longer exist were dropped, which had been failing
+that guard before this change. Archived snapshots are untouched.
+
+Board builds pass. `ICM_20948.h` was missing from this machine and was installed
+(SparkFun 9DoF IMU Breakout - ICM 20948, 1.3.2); it was the only absent dependency, and
+all ten sketches in `firmware/` now compile. The four ESP32-S3 builds used Arduino-ESP32
+3.3.11 and FQBN `esp32:esp32:esp32s3`, with no warning in any changed file:
+
+  | Sketch | Program bytes | Global RAM bytes |
+  | --- | ---: | ---: |
+  | MRCC_FlightComputer_A | 452278 | 26176 |
+  | MRCC_FlightComputer_B | 452282 | 26176 |
+  | MRCC_HandMotion_A | 453154 | 26176 |
+  | MRCC_HandMotion_B | 453158 | 26176 |
+
+The changed logging code is additionally compiled for all four sketches by the host suites
+under `-Wall -Wextra -Werror` with ASan/UBSan; the `Health.cpp` status block, which the
+host suites do not compile, was type-checked separately against the real header.
+
+**All physical acceptance below remains outstanding.** No firmware upload, serial command,
+or hardware action was performed. A compile is not evidence that the descriptor survives a
+real remount on the card.
+
 ## Checked POSIX follow-up
 
 - Startup/header and data writes now use a move-only descriptor wrapper around

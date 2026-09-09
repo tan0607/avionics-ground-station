@@ -35,7 +35,10 @@ class LogCheckpoint {
   bool append(FileType& file, const char* line, size_t len) {
     if (error_) return false;
     readbackSizeKnown_ = false; // previous checkpoint size is not this batch
-    if (!file) { error_ = "append handle"; return false; }
+    // A handle can hold a descriptor and still be unwritable - its mount torn
+    // down, or an earlier error already recorded. Say so, with that errno,
+    // instead of letting a write that never happened look like a short one.
+    if (!file) { ioError_ = file.errorNumber(); error_ = "append handle"; return false; }
     if (len > SIZE_MAX - 2 || expectedBytes_ > SIZE_MAX - len - 2) {
       error_ = "file size overflow";
       return false;
@@ -43,9 +46,14 @@ class LogCheckpoint {
     const uint8_t newline[] = {'\r', '\n'};
     const auto* data = reinterpret_cast<const uint8_t*>(line);
     // Check CRLF as well: a partial newline is not a complete CSV row.
-    if (file.write(data, len) != len || file.write(newline, 2) != 2) {
+    size_t wrote = file.write(data, len);
+    size_t wroteNewline = (wrote == len) ? file.write(newline, 2) : 0;
+    if (wrote != len || wroteNewline != 2) {
       ioError_ = file.errorNumber();
       error_ = "short write";
+      // Bytes the filesystem did accept are on the card. Count them so the
+      // reported expected size is the file, not the last complete row.
+      expectedBytes_ += wrote + wroteNewline;
       return false;
     }
     pendingHash_ = hash(pendingHash_, data, len);
@@ -69,9 +77,8 @@ class LogCheckpoint {
     }
     FileType reader = fs.open(name, "r");
     if (!reader) { ioError_ = reader.errorNumber(); error_ = "readback open"; return false; }
-    readbackBytes_ = reader.size();
-    if (reader.errorNumber()) {
-      ioError_ = reader.errorNumber(); reader.close();
+    if (!reader.querySize(readbackBytes_)) {
+      ioError_ = reader.statErrorNumber(); reader.close();
       error_ = "readback stat"; return false;
     }
     readbackSizeKnown_ = true;
