@@ -179,7 +179,11 @@ void serviceHealth() {
   if (!sdOK && millis() - lastSdRetry > 30000) {
     lastSdRetry = millis();
 
-    if (initSD(false)) {
+    // First recovery prints the full electrical probe: MISO, card handshake and
+    // card class. That says whether the card is dead or merely dropped, and it
+    // costs nothing - initSD() runs the same probe either way, verbose only
+    // decides whether the result is printed.
+    if (initSD(sdRecoveries == 0)) {
       sdOK = true;
       sdRecoveries++;
       Serial.print("[SD] *** RECOVERED *** (recovery #");

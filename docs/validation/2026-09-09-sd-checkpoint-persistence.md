@@ -6,6 +6,65 @@ the first 257-byte data row did not appear in fresh readback. The current follow
 uses checked POSIX writes on the existing SD VFS mount. It has not been uploaded
 by the agent. Physical power-off persistence and loop timing remain outstanding.
 
+## The card, not the code: EBADF traced to the shipped binary
+
+After the dead-descriptor fix was flashed, the same line appeared again on
+`/FLIGHT015.CSV`. The board was confirmed to be running the fix: the IDE's build
+of 22:36 contains `append handle` and `cannot size the file`, strings that exist
+only in the new sources.
+
+The failure was then traced instruction by instruction in that exact `.elf`:
+
+- `vfs_fat_write` sees the descriptor's stored `O_APPEND` bit and calls
+  `f_lseek(file, f_size(file))` **before** `f_write` on every write.
+- `f_lseek` calls FatFs `validate()`, whose last check is
+  `ff_disk_status(pdrv) & STA_NOINIT`. Disassembly of `validate` at `42023b6c`
+  shows that path returning 9.
+- `fresult_to_errno` maps FRESULT 9 (`FR_INVALID_OBJECT`) to errno 9, confirmed
+  by the `movi.n a2, 9 / beq` pair at `4202627b`.
+- `write()` therefore returns -1 with `EBADF`, which the checkpoint reports as
+  `short write | io_errno=9`.
+
+So the driver is reporting that **the card is no longer initialised** at the
+moment of the write. It was alive moments earlier: the 243-byte header write,
+`fsync`, `close`, reopen for read, `fstat`, read, `close` and reopen for append
+all succeeded on the same file, and `f_open` validates the volume too. The card
+therefore stops answering somewhere between the end of `initSD()` and the first
+`loop()` iteration - a window containing `initGPS`, `initIMU`, `filterInit`,
+`initBaro` and `initRadio`.
+
+SD and LoRa are on separate buses with no shared pins (SD 14/16/15/7, LoRa
+12/13/11/10/9/8), so bus contention is excluded; supply and signal integrity are
+not. The user reports the module is fed 5 V and that file creation succeeds while
+writes intermittently fail, which matches a rail that sags on the card's write
+and erase current bursts rather than a logic fault.
+
+`SD.cardType()` was evaluated as a runtime probe and rejected: in this core it
+returns the cached `card->type` and only reports `CARD_NONE` after an explicit
+unmount, so a browned-out card still reads as SDHC. A live probe in the failure
+path was also rejected - a card re-init can block for about a second, and nothing
+in `loop()` may block.
+
+## Mount clock and failure diagnostics
+
+- The mount ladder is now 4 MHz then 1 MHz; 10 MHz is gone. A marginal rail or
+  long wiring mounts happily at 10 MHz and then loses the card under sustained
+  writes. The achieved frequency is recorded in `sdMountHz`, printed at startup.
+- The failure line now carries `(EBADF - card stopped answering)` when the errno
+  is EBADF, plus `mount=<n>MHz` and `t=<millis>ms` so a failure can be correlated
+  with what the vehicle was doing.
+- The first SD auto-recovery is now verbose, printing the full MISO/handshake/card
+  probe. `initSD()` runs that probe either way, so this costs no time.
+- Two source-level tests pin the ladder and the failure-line fields, since no host
+  fake can exercise a mount clock.
+
+Verification: focused suite 32 tests OK, full firmware 123 tests with the same two
+expected `test_safety_interrupted_pulse_not_lost_A/B` failures and the pre-existing
+`fastapi` environment error, HandMotionTest 13/13. All four ESP32-S3 builds pass
+with no warning in any changed file: A=452510, B=452514, HandA=453370, HandB=453374
+program bytes, 26184 bytes global RAM each. This is a diagnostic and mount-clock
+change; it does not by itself repair a supply that cannot hold the card up.
+
 ## Dead-descriptor root cause and fix
 
 The hardware report was

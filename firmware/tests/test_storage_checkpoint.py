@@ -88,6 +88,32 @@ class CheckedLogFileTest(unittest.TestCase):
     def test_real_dead_handle_is_not_reported_as_a_short_write(self): self.scenario("dead_handle")
 
 
+class SdMountLadderTest(unittest.TestCase):
+    """The mount clock is a hardware setting no host fake can exercise, so it is
+    pinned here. 10 MHz mounts on marginal wiring and then loses the card during
+    sustained writes, which the driver reports as an invalid descriptor."""
+
+    def test_all_sketches_mount_at_4mhz_then_1mhz(self):
+        for sketch in SKETCHES:
+            with self.subTest(sketch=sketch.name):
+                source = (sketch / "src" / "Storage.cpp").read_text()
+                self.assertEqual(re.findall(r"sdMountHz = (\d+);", source),
+                                 ["0", "4000000", "1000000", "0"], "mount ladder changed")
+                self.assertNotIn("10000000", source, "10 MHz mount reintroduced")
+                self.assertEqual(source.count("SD.begin(SD_CS, sdSPI, sdMountHz)"), 2,
+                                 "a mount bypasses the recorded frequency")
+
+    def test_failure_line_reports_mount_and_errno_meaning(self):
+        for sketch in SKETCHES:
+            with self.subTest(sketch=sketch.name):
+                source = (sketch / "src" / "Storage.cpp").read_text()
+                failure = source[source.index("static void storageFailure"):]
+                failure = failure[:failure.index("\nvoid serviceLogging")]
+                for field in ("io_errno=", "EBADF - card stopped answering",
+                              "mount=", "t="):
+                    self.assertIn(field, failure, field)
+
+
 def definition(source, signature):
     match = re.search(re.escape(signature) + r"\s*\{", source)
     if not match:

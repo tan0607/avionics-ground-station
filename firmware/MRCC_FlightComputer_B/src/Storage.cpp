@@ -26,6 +26,7 @@ uint8_t probeResult = PROBE_NO_MODULE;
 
 static unsigned long lastLog   = 0;
 static bool cardIsHighCapacity = false;
+static unsigned long sdMountHz = 0;
 
 static void logOneLine();
 static void closeLogBeforeUnmount();
@@ -288,11 +289,19 @@ bool initSD(bool verbose) {
   SD.end();
   delay(50);
 
-  sdOK = SD.begin(SD_CS, sdSPI, 10000000);
-  if (!sdOK) sdOK = SD.begin(SD_CS, sdSPI, 4000000);
-  if (!sdOK) sdOK = SD.begin(SD_CS, sdSPI, 1000000);
+  // 4 MHz first, not 10. A marginal rail or long wiring mounts happily at
+  // 10 MHz and then loses the card during sustained writes, which the driver
+  // reports much later as a descriptor that is no longer valid.
+  sdMountHz = 4000000;
+  sdOK = SD.begin(SD_CS, sdSPI, sdMountHz);
 
   if (!sdOK) {
+    sdMountHz = 1000000;
+    sdOK = SD.begin(SD_CS, sdSPI, sdMountHz);
+  }
+
+  if (!sdOK) {
+    sdMountHz = 0;
     if (verbose) {
       Serial.println("[SD] >>> CARD ALIVE BUT NO USABLE FILESYSTEM <<<");
       Serial.println("[SD] It is exFAT, blank or corrupted.");
@@ -302,6 +311,10 @@ bool initSD(bool verbose) {
   }
 
   if (verbose) {
+    Serial.print("[SD] Mounted at ");
+    Serial.print(sdMountHz / 1000000.0, 1);
+    Serial.println(" MHz");
+
     uint8_t cardType = SD.cardType();
 
     Serial.print("[SD] Card type: ");
@@ -467,7 +480,17 @@ static void storageFailure(const char* reason, int ioError) {
   Serial.print(" pending=");
   Serial.print(logCheckpoint.pendingLines());
   Serial.print(" | io_errno=");
-  Serial.println(ioError);
+  Serial.print(ioError);
+  // Traced to the instruction in the shipped binary: FatFs validate() returns
+  // FR_INVALID_OBJECT when the driver reports the card uninitialised, and the
+  // VFS maps that to EBADF. It means the card stopped answering, not that this
+  // row was too long or the handle was misused.
+  if (ioError == EBADF) Serial.print(" (EBADF - card stopped answering)");
+  Serial.print(" | mount=");
+  Serial.print(sdMountHz / 1000000.0, 1);
+  Serial.print("MHz | t=");
+  Serial.print(millis());
+  Serial.println("ms");
 }
 
 void serviceLogging() {
