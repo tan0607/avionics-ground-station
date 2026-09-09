@@ -33,5 +33,10 @@ extern float           baroSpikeAlt;
 // see Baro.cpp.
 extern unsigned long   baroTriggerFails;
 
+// Resets caught by the ctrl_meas readback. Distinct from baroSpikeCount (the
+// sensor disagreeing) and baroTriggerFails (the bus failing): this is the part
+// throwing its configuration away, which used to be invisible.
+extern unsigned long   baroConfigLost;
+
 bool initBaro(bool verbose);
 void readBaro();

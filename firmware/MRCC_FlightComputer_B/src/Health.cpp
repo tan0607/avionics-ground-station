@@ -281,6 +281,12 @@ void printStatus() {
       Serial.print(" | TRIG_FAIL=");
       Serial.print(baroTriggerFails);
     }
+    // A non-zero count here is the supply, not the sensor. The part answers
+    // fine either side of it; what it cannot do is hold a register.
+    if (baroConfigLost > 0) {
+      Serial.print(" | RESET=");
+      Serial.print(baroConfigLost);
+    }
   }
   else {
     Serial.print(" | NO BARO - apogee would be TIMER ONLY");

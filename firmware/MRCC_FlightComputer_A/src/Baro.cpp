@@ -17,6 +17,11 @@ static unsigned long lastBaroRead = 0;
 // conversion all over again.
 unsigned long baroTriggerFails = 0;
 
+// Times the part was found to have lost its configuration - a RESET, not a bad
+// reading. See configHeld() below for what that looks like and why nothing else
+// in this file catches it.
+unsigned long baroConfigLost = 0;
+
 // ctrl_meas: osrs_t in 7:5, osrs_p in 4:2, mode in 1:0.
 // x1 temperature, x8 pressure, FORCED - the same oversampling the
 // sensor ran in normal mode, taken one conversion at a time.
@@ -37,6 +42,52 @@ static bool triggerForced() {
   Wire.write(BMP280_REG_CTRL_MEAS);
   Wire.write(BARO_CTRL_FORCED);
   return Wire.endTransmission() == 0;
+}
+
+// The MODE bits are useless for this test. After a forced conversion the part
+// returns them to sleep by itself, so 00 there is normal behaviour and not
+// evidence of anything. The OVERSAMPLING bits are the opposite: retained across
+// every conversion, lost only across a reset. So they are the only part of this
+// register worth reading back.
+#define BARO_CTRL_OSRS_MASK  0xFC
+
+// Is the part still holding the configuration we gave it?
+//
+// This is the net for the failure the rest of this file cannot see. When A1R's
+// BMP280 loses its supply it does not go quiet and it does not read noisily -
+// it RESETS: ctrl_meas reads back 0x00 and the data registers sit at 0x80000,
+// their power-on value, which compensates to about 616 hPa and publishes as a
+// steady ~4000 m.
+//
+// Nothing else here catches that:
+//
+//   The absolute gate is 300-1100 hPa and 616 sits comfortably inside it.
+//
+//   The rate gate catches the STEP, but only for BARO_REJECT_RUN samples -
+//   500 ms - after which it concludes the sensor means it and re-seeds. That
+//   re-seed is correct behaviour for a sensor that is merely offset, and it is
+//   what keeps the 4000 m step out of the alpha-beta filter. But afterwards the
+//   reading is steady, so vertVel sits at zero, APOGEE_VEL is never satisfied,
+//   and the barometer has silently stopped being able to call apogee.
+//
+//   baroOK stays TRUE through all of it, because the part answers on I2C
+//   perfectly well - it just answers with its reset values. So the vehicle
+//   downlinks BA=1 for the whole flight while apogee quietly falls through to
+//   APOGEE_TIMEOUT.
+//
+// A bus error is deliberately NOT reported as a reset. We cannot tell from a
+// failed transfer, and a genuinely absent sensor is already covered by
+// baroTriggerFails and the BARO_STALE watchdog in Health.cpp. This test exists
+// for the part that is present and answering and wrong.
+static bool configHeld() {
+  Wire.beginTransmission(baroAddress);
+  Wire.write(BMP280_REG_CTRL_MEAS);
+  if (Wire.endTransmission(false) != 0) return true;
+  if (Wire.requestFrom((uint8_t) baroAddress, (uint8_t) 1) != 1) return true;
+
+  const uint8_t ctrl = Wire.read();
+  return (ctrl & BARO_CTRL_OSRS_MASK) ==
+         (BARO_CTRL_FORCED & BARO_CTRL_OSRS_MASK);
 }
 
 // Spike gate state. Seeded by the first accepted sample and
@@ -159,6 +210,21 @@ void readBaro() {
   // happen BEFORE the next trigger, so they describe the same sample -
   // triggering between them could let the temperature come from a
   // newer conversion than the pressure it compensates.
+  // Before the data registers are believed, not after. A reset part's registers
+  // hold a perfectly well-formed number; the only place the reset is visible is
+  // the configuration it threw away.
+  if (!configHeld()) {
+    baroConfigLost++;
+    baroOK = false;
+    Serial.println("[BARO] ctrl_meas lost its oversampling bits - THE PART HAS");
+    Serial.println("[BARO] RESET. Its data registers now read ~4000 m.");
+    Serial.println("[BARO] Marking DOWN so Health.cpp re-initialises it.");
+    Serial.println("[BARO] *** APOGEE IS TIMER ONLY until it comes back ***");
+    Serial.println("[BARO] A climbing recovery count here is a SUPPLY fault,");
+    Serial.println("[BARO] not a sensor fault - see Config.h.");
+    return;
+  }
+
   float pa = bmp.readPressure();      // Pa
   float tc = bmp.readTemperature();   // C
 
