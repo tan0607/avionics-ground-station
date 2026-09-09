@@ -128,7 +128,15 @@ export interface TelemetryState {
 const UI_TICK_MS = 100 // republish link age / clock at 10 Hz even when idle
 const LOSS_WINDOW_MS = 10_000 // sliding window for packet-loss stats
 const DOWN_AFTER_MS = LINK_STALE_MS * 2 // "stale" → "down" once well past
-const MAX_CHART_POINTS = 4000 // safety cap (a real flight is ~300 pts)
+// Safety cap. Sized in POINTS, spent at the link rate, so it has to move when
+// the link rate does: 4000 was ~33 minutes at 2 Hz and would be 6.7 at 10 Hz -
+// shorter than a pad wait, and the altitude chart is deliberately unwindowed
+// because the whole flight arc is the thing you want. Past the cap the oldest
+// samples shift out, so the failure would have been the ground reference and
+// the boost quietly scrolling off the left of the chart while it still looked
+// like a complete trace. 20000 restores the same ~33 minutes; a real flight at
+// 10 Hz is ~1500 points, so the ~10x headroom this was sized for is intact.
+const MAX_CHART_POINTS = 20000
 const SESSION_RESET_MS = 1500 // onboard clock jumping back = new flight/session
 
 /** One received-packet event in the loss window: how many were missed before it. */
@@ -345,9 +353,12 @@ export function useTelemetry(resetKey = "", acceptFrames = true): TelemetryState
       // it puts a second point at an x the series already has: the trace stops
       // advancing for a sample and then jumps, which reads as the chart lagging
       // the numbers. It also burns the point budget at the repeat rate, and on
-      // this link that is ~2x typical and up to 12x in bursts (measured on the
+      // this link that WAS ~2x typical and up to 12x in bursts (measured on the
       // 2026-08-19 bench log), so MAX_CHART_POINTS stops being the ~10x headroom
-      // over a real flight that it is sized to be.
+      // over a real flight that it is sized to be. The transmitter no longer
+      // repeats a packet at all, so this should now be dead weight - it is kept
+      // because a duplicate is a property of the LINK, not of the transmitter:
+      // a retune, a reflash, or two boxes on one channel can all reproduce it.
       //
       // Everything a duplicate legitimately proves is still recorded above: the
       // link is alive (lastArrival), it counts in the line rate, and its own

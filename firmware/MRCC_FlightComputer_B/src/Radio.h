@@ -17,7 +17,7 @@ extern unsigned long txBusyCount;
 extern unsigned long txTimeoutCount;
 extern unsigned long txFallbackCount;
 
-extern char txPacket[256];   // 255 = LoRa's payload limit, +1 for the NUL
+extern uint8_t txPacket[256];  // binary; 255 = LoRa's payload limit
 extern int  txPacketLen;
 
 bool initRadio(bool verbose);

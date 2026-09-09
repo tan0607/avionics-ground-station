@@ -1,7 +1,22 @@
-"""Compile the actual Radio.cpp packet-builder body with actual Flight modules.
+"""Compile the actual Radio.cpp packet builder AND the actual ground-station
+decoder, and check what comes out the far end.
 
-SPI/LoRa transport is outside this host check. The extracted body is not a
-second implementation of formatting; source changes are compiled every run.
+The downlink is binary now, so "what the packet says" is no longer something
+you can read off the transmitter alone - it is whatever the two ends AGREE it
+says. This test is therefore a round trip: the encoder region and
+buildTelemetryPacket() are lifted out of Radio.cpp, the decoder region is lifted
+out of MRCC_GroundStation.ino, they are compiled together against the real
+Flight modules, and the ASCII line that falls out is fed to mrcc.py exactly as
+the laptop would receive it.
+
+That is why every assertion below still reads in ASCII while nothing on the air
+is ASCII any more: the ground station re-expands the binary into the identical
+`MRCC,PKT=...` line, and these assertions are the check that it does. A field
+that the encoder writes and the decoder reads at a different offset fails here,
+which is the failure the old single-ended test could not have.
+
+SPI/LoRa transport is outside this host check. Neither extracted region is a
+second implementation; source changes on both sides are compiled every run.
 """
 import json
 from pathlib import Path
@@ -16,6 +31,22 @@ from backend.wire import telemetry_to_wire
 
 ROOT = Path(__file__).resolve().parents[2]
 HOST = ROOT / "firmware/tests/ejection_host"
+GROUND = ROOT / "firmware/MRCC_GroundStation/MRCC_GroundStation.ino"
+
+
+def region(source: str, tag: str) -> str:
+    """The source between `---- <tag> BEGIN ----` and `---- <tag> END ----`.
+
+    Extracting by marker rather than by function signature because both regions
+    are several functions plus their reasoning, and the reasoning is the part
+    most likely to be edited without the code. Copying either into this file
+    would defeat the entire point of the test.
+    """
+    begin = source.index(f"---- {tag} BEGIN ----")
+    end = source.index(f"---- {tag} END ----")
+    if end < begin:
+        raise AssertionError(f"{tag} markers are out of order")
+    return source[source.index("\n", begin) + 1 : source.rindex("//", begin, end)]
 
 
 class ArmingDownlinkTest(unittest.TestCase):
@@ -26,17 +57,24 @@ class ArmingDownlinkTest(unittest.TestCase):
         cls.binaries = {}
         for vehicle in "AB":
             src = ROOT / f"firmware/MRCC_FlightComputer_{vehicle}/src"
-            body = function_body((src / "Radio.cpp").read_text(), "static void buildTelemetryPacket()")
+            radio = (src / "Radio.cpp").read_text()
+            body = function_body(radio, "static void buildTelemetryPacket()")
+            codec = region(radio, "TLM CODEC")
+            decoder = region(GROUND.read_text(), "TLM DECODE")
             unit = Path(cls.tmp.name) / f"packet_{vehicle}.cpp"
             unit.write_text(f'''#include <cstring>
+#include <cstdio>
+#include <cmath>
 #define main flightHostMain
 #include "{HOST / 'main.cpp'}"
 #undef main
-char txPacket[256];
+uint8_t txPacket[256];
 int txPacketLen = 0;
 int logFileIndex = 1;
 unsigned long logLineCount = 300, sdErrorCount = 0;
+{codec}
 static void buildTelemetryPacket() {{ {body} }}
+{decoder}
 int main(int argc, char**) {{
   int result = flightHostMain();
   if (result) return result;
@@ -51,7 +89,10 @@ int main(int argc, char**) {{
     headingFilt = heading = 359;
   }}
   buildTelemetryPacket();
-  std::cout << "PACKET " << txPacket << '\\n';
+  char line[320];
+  int n = tlmDecode(txPacket, txPacketLen, line, sizeof(line));
+  if (n < 0) {{ std::cerr << "decode rejected a packet the encoder built\\n"; return 2; }}
+  std::cout << "PACKET " << line << '\\n';
   return 0;
 }}
 ''')
@@ -69,7 +110,8 @@ int main(int argc, char**) {{
                                     capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             line = next(s.removeprefix("PACKET ") for s in result.stdout.splitlines() if s.startswith("PACKET "))
-            sample = json.loads(result.stdout.splitlines()[-2])
+            sample = json.loads(next(t for t in reversed(result.stdout.splitlines())
+                                     if t.startswith("{")))
             yield vehicle, line, sample
 
     def test_actual_pad_packet_transports_countdown_and_records_it(self):

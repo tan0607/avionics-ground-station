@@ -7,8 +7,10 @@
 >
 > ⚠️ **This file predates the switch to the MRCC link and is stale in two ways.**
 > The radio is a bare SX1278 on SPI, not an EBYTE E32 — every mention of
-> M0/M1/AUX below is history. And the downlink is ASCII MRCC text at 2 Hz, not
-> the 32-byte binary frame described in §5; `shared/protocol/mrcc.py` decodes it
+> M0/M1/AUX below is history. And the downlink is a 52-67 byte MRCC binary frame
+> at 10 Hz, expanded by the ground station into the ASCII MRCC text that
+> `shared/protocol/mrcc.py` parses — not the 32-byte binary frame described in
+> §5, and not the 2 Hz ASCII downlink that replaced it. `mrcc.py` decodes it
 > and maps it onto `packet.Telemetry`, which survives as the project's internal
 > data shape rather than as a wire format. For what actually flies and how to
 > flash it, read **`firmware/README.md`** — it is current.

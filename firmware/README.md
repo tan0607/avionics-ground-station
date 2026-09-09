@@ -119,7 +119,7 @@ verify the mounted hardware separately from host tests.
 
 | Sketch | Board | FQBN | Job |
 |---|---|---|---|
-| `MRCC_FlightComputer_A/` | ESP32-**S3** | `esp32:esp32:esp32s3` | vehicle A: sensors, filters, flight state, pyro, SD log, and a 2 Hz MRCC downlink |
+| `MRCC_FlightComputer_A/` | ESP32-**S3** | `esp32:esp32:esp32s3` | vehicle A: sensors, filters, flight state, pyro, SD log, and a 10 Hz binary downlink |
 | `MRCC_FlightComputer_B/` | ESP32-**S3** | `esp32:esp32:esp32s3` | vehicle B: same flight logic, with B's pins and radio channel |
 | `MRCC_GroundStation/` | classic **ESP32** | `esp32:esp32:esp32` | receive that downlink and print it to USB for the backend |
 | `SD_Doctor/` | ESP32-**S3** | `esp32:esp32:esp32s3` | bench-only SD card fault finder — no radio, no sensors. Flash it when the card won't mount, then drive it from the serial monitor |
@@ -166,7 +166,7 @@ rocket end is invisible to it, so the transmitter gets its own.
 | 1 | Radio present? | same two-direction SPI handshake as `GS_Doctor` |
 | 2 | Link parameters | modem readback vs the contract, with the reset-default column that makes a refused write visible |
 | 3 | **Transmit** | the one worth flashing for — see below |
-| 4 | DIO0 TxDone | `Radio.cpp` transmits async and waits on this interrupt. Unwired, telemetry **does not stop** — it falls back to the `TX_MAX_AIR` timeout and pays up to 300 ms of a 500 ms budget per packet, silently. `txFallbackCount` is the only evidence and nobody reads it |
+| 4 | DIO0 TxDone | `Radio.cpp` transmits async and waits on this interrupt. Unwired, telemetry **does not stop** — it falls back to the `TX_MAX_AIR` timeout and pays up to 90 ms of a 100 ms budget per packet, silently. `txFallbackCount` is the only evidence and nobody reads it |
 | 5 | Power sweep | transmits at rising power to find where the supply gives out. It can't measure sag (no VBAT divider), so it stamps the level into RTC memory — **if the board reboots, that is the result**; come back and read the boot banner |
 | 6 | Listen | the other half of `GS_Doctor`'s beacon. Run both and the pair proves the link in each direction with nobody in a field |
 | 7 | I2C bus scan | both sensors share one bus, so one device holding SDA low takes out the other — the symptom is "the barometer died" when the fault is the IMU |
@@ -180,16 +180,20 @@ correctly while the modem does something else.
 
 | payload | SF7 (the contract) | SF8 | SF9 |
 |---|---|---|---|
-| 237 bytes | **187 ms** | 328 ms | 584 ms |
+| 67 bytes | **62 ms** | 108 ms | 190 ms |
 
-At SF9 a single copy outlasts the whole 500 ms `SEND_INTERVAL`. At SF8 every
-transmission would exceed `TX_MAX_AIR` and the fallback would fire on every
-packet with telemetry still flowing. A board on the wrong spreading factor can't
-hide from a clock.
+At SF8 and above a single packet outlasts the whole 100 ms `SEND_INTERVAL` and
+exceeds `TX_MAX_AIR`, so the fallback would fire on every packet with telemetry
+still flowing. A board on the wrong spreading factor can't hide from a clock.
 
-Test 3 also reports the duty cycle, which moves whenever the packet grows: two
-187 ms copies plus the 60 ms gap is 434 ms of a 500 ms window — **87%**, with
-66 ms of margin. Re-run it after adding a field.
+Test 3 also reports the duty cycle, which moves whenever the packet changes: one
+62 ms packet in a 100 ms window is **~62%**, with 38 ms of margin. Re-run it
+after adding a field.
+
+Those numbers replaced two 187-byte ASCII copies plus a 60 ms gap — 434 ms of a
+500 ms window, 87% duty, at 2 Hz. The packet went binary because 187 ms of air
+does not fit in a 100 ms window at any power or coding rate; the duty cycle fell
+as a side effect.
 
 **Pyro is never touched.** The gate pin is driven LOW in `setup()` and never
 raised; the sketch has no fire path at all.
@@ -334,12 +338,13 @@ one channel you get both failures at once:
   loss count turns to noise, and the map hops between airframes; and
 - the two transmitters **collide on air**, so neither link survives.
 
-The second one is decisive. One telemetry cycle is two copies of a ~231-byte
-packet at SF7 / BW 250 kHz / CR 4-5: ~182 ms of air each, plus the 60 ms
-`COPY_GAP`, inside a 500 ms `SEND_INTERVAL`. **One rocket alone already radiates
-~73% of the time** and its transmit sequence occupies ~85% of every window.
-There is no room to share, and no setting short of a different frequency makes
-room. Check the `air=` figure the flight computer prints against that 182 ms.
+The second one is decisive. One telemetry cycle is a single 52–67 byte binary
+packet at SF7 / BW 250 kHz / CR 4-5: ~51–62 ms of air inside a 100 ms
+`SEND_INTERVAL`. **One rocket alone radiates ~60% of the time.** That is down
+from the ~87% two ASCII copies cost at 2 Hz, and it still leaves no room to
+share: at 60% duty a second transmitter on this channel collides with well over
+half of these packets. No setting short of a different frequency makes room.
+Check the `air=` figure the flight computer prints against that 62 ms.
 
 Both channels sit inside Malaysia's 433 MHz ISM allocation (MCMC:
 433.05 – 434.79 MHz) and are 800 kHz apart — comfortably wider than the 250 kHz

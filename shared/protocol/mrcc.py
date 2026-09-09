@@ -5,15 +5,22 @@ This module exists because the airborne board currently downlinks something else
 ~190 bytes of ASCII key=value, which `packet.PacketParser` can only throw away
 (it hunts for 0xAA55 and never finds it).
 
-RATE, measured rather than assumed (live /stats delta over 20 s, 2026-08-20, and
-confirmed against flights/2026-08-19T05-54-40Z): the transmitter emits **2 Hz**
--- 500 ms between onboard timestamps -- and sends EVERY PACKET TWICE, ~205 ms
-apart. So the receiver prints ~4 lines/s while only 2 of them carry new
-telemetry. Both numbers matter and they are not interchangeable: the line rate
-is what a serial monitor shows you, the frame rate is how often the console can
-actually change, and expecting the first from the second reads as a ground
-station lagging its own radio. `LossTracker` already counts the repeats as
-`duplicates` (delta == 0), so they inflate neither loss nor the frame count.
+RATE: the transmitter emits **10 Hz** -- 100 ms between onboard timestamps --
+and sends each packet ONCE, so the line rate and the frame rate are the same
+number now. Both are still recorded separately in backend.session.PACKET_DESC
+because they were different for most of this project's life and the two get
+mistaken for each other constantly.
+
+It was 2 Hz sent twice (~205 ms apart, ~4 lines/s), measured off a live /stats
+delta on 2026-08-20 and flights/2026-08-19T05-54-40Z. What changed is not a
+setting: at SF7/BW250 the ASCII packet below is 149-187 ms of air, so ONE copy
+of it overran a 100 ms window and no power or coding-rate choice made 10 Hz
+reachable. The vehicle now downlinks 52-67 bytes of BINARY (~48-60 ms) and the
+GROUND STATION expands it back into the exact ASCII this module parses -- which
+is why this module did not change. The second copy went with it: at 10 Hz a lost
+packet costs 100 ms of timeline rather than 500, so the rate buys the redundancy
+the repeat used to. `LossTracker` still counts any repeat as a `duplicate`
+(delta == 0), which now simply never fires.
 
 One line off the bridge's USB port looks like this — the `len=/RSSI=/SNR=` prefix
 is added by the GROUND receiver sketch, everything after the `|` came over the air:
@@ -22,13 +29,16 @@ is added by the GROUND receiver sketch, everything after the `|` came over the a
     LAT=0.000000,LON=0.000000,GALT=0.0,GSPEED=0.00,COURSE=0.0,AX=0.00,AY=0.00,
     AZ=9.81,VX=0.00,VY=0.00,VZ=0.00,ALT=0.0,HDG=103.5,P=101325,STATE=LANDED
 
-The build in `firmware/` today (Radio.cpp) sends short keys throughout, drops
-P/VX/VY for the byte budget, and adds the flight and health fields the line above
-had no room for:
+The build in `firmware/` today emits this, via the ground station's decoder --
+short keys throughout, P/VX/VY dropped (VX/VY are computed FROM GS and CRS, so
+on the air they were redundancy), and the flight and health fields the line
+above had no room for. `AIR=` is the over-air byte count of the binary frame it
+was expanded from:
 
-    len=185 RSSI=-53 SNR=10.2 | MRCC,PKT=207,T=207.5,ST=PAD,AL=0.4,VZ=0.0,MX=0.4,
+    len=196 RSSI=-53 SNR=10.2 | MRCC,PKT=207,T=207.5,ST=PAD,AL=0.4,VZ=0.0,MX=0.4,
     AR=0,FI=0,GD=1,GF=1,SAT=8,LAT=4.098600,LON=100.950500,GA=45.0,GS=0.0,CRS=0,
-    AX=0.10,AY=0.20,AZ=9.79,GX=0,GY=0,GZ=0,HDG=103,SD=1,BA=1,IM=1
+    AX=0.10,AY=0.20,AZ=9.79,GX=0,GY=0,GZ=0,HDG=103,SD=1,BA=1,IM=1,AW=1,AD=120,
+    AS=0,AIR=57
 
 An older revision of the same transmitter emitted a shorter set with a vehicle id
 and a battery reading (`MRCC,RKT01,PKT=16,...,BAT=4.15,TEMP=29.6,STATE=ASCENT`).
@@ -206,6 +216,13 @@ AUX_FIELDS: tuple[str, ...] = (
     # Prelaunch arming report (Flight.h): blocker mask and remaining seconds.
     # Missing on legacy firmware, in flight, or when packet budget omits it.
     "AW", "AD", "AS",
+    # Over-air frame size in bytes, added by the GROUND STATION, not the
+    # vehicle. `len=` used to carry this and no longer can: the downlink is
+    # binary now and the receiver expands it, so len= describes the expanded
+    # ASCII (which is what the splice check below compares it against) while
+    # AIR= describes what actually cost air time. Absent on legacy ASCII
+    # frames, where len= still is the frame size.
+    "AIR",
 )
 
 # `aux_`-prefixed and lowercased so an aux field can never collide with a

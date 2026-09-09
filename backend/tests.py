@@ -357,7 +357,7 @@ def test_session_writes_mrcc_aux_columns() -> None:
         # replay tool builds the wrong reader.
         meta = json.loads((sw.dir / "metadata.json").read_text())
         assert meta["csv_columns"] == mrcc.CSV_COLUMNS
-        assert meta["packet"]["rate_hz"] == 2 and meta["packet"]["tx_repeat"] == 2
+        assert meta["packet"]["rate_hz"] == 10 and meta["packet"]["tx_repeat"] == 1
 
 
 def test_mrcc_sd_field_drives_the_sd_health_bit() -> None:
@@ -618,15 +618,19 @@ def test_every_field_the_firmware_sends_has_somewhere_to_land() -> None:
     enough: that is the catch-all, and a field nobody named is a field nobody
     plotted.
     """
-    src = Path(__file__).resolve().parent.parent / "firmware/MRCC_FlightComputer_A/src/Radio.cpp"
-    assert src.is_file(), f"transmitter source moved: {src}"
+    # The GROUND STATION, not the vehicle. The downlink is binary now, so the
+    # transmitter has no format strings to read: the keys are written by the
+    # decoder that expands the frame, and that is also the honest place to check
+    # them, because it is literally what reaches this laptop.
+    src = Path(__file__).resolve().parent.parent / "firmware/MRCC_GroundStation/MRCC_GroundStation.ino"
+    assert src.is_file(), f"receiver source moved: {src}"
 
     text = src.read_text()
-    start = text.index("buildTelemetryPacket() {")
-    body = text[start:text.index("txPacketLen = strlen", start)]
+    start = text.index("---- TLM DECODE BEGIN ----")
+    body = text[start:text.index("---- TLM DECODE END ----", start)]
 
-    # `AL=%.1f` -> AL. Only inside the format string, so the argument list and
-    # the comments above it cannot contribute false keys.
+    # `AL=%.1f` -> AL. Only inside the format strings, so the argument lists and
+    # the comments around them cannot contribute false keys.
     keys = {m for m in re.findall(r'([A-Z][A-Z0-9]*)=%', body)}
     assert "PKT" in keys and "AL" in keys, keys      # the extraction itself works
 

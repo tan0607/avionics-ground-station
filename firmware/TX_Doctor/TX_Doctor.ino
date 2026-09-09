@@ -108,16 +108,30 @@ const bool  WANT_CRC     = true;
 const int   WANT_TXPOWER = 17;           // TX_POWER_DEFAULT
 
 // From Config.h. Test 3 checks the real air time against
-// these, because two copies that no longer fit inside
+// these, because a packet that no longer fits inside
 // SEND_INTERVAL is a link that eats itself.
-const unsigned long SEND_INTERVAL = 500;
+const unsigned long SEND_INTERVAL = 100;
 const unsigned long COPY_GAP      =  60;
-const unsigned long TX_MAX_AIR    = 300;
+const unsigned long TX_MAX_AIR    =  90;
 
-// Worst-case packet from buildTelemetryPacket() with the
-// health block on the end. Test 3 sends this length so
-// the measured air time is the flight's air time.
-const int TEST_PAYLOAD = 237;
+// Copies per cycle, from TX_COPIES_DEFAULT. One, and at
+// this SEND_INTERVAL it cannot be two - a second copy
+// needs COPY_GAP plus another full air time, which does
+// not fit in 100 ms. Test 3 works this out for whatever
+// it is set to rather than assuming.
+const int TX_COPIES = 1;
+
+// Worst-case binary packet from buildTelemetryPacket():
+// TLM_BASE_LEN plus both optional blocks (52 + 5 + 10).
+// Test 3 sends this length so the measured air time is
+// the flight's air time.
+//
+// It was 237 - the worst-case ASCII packet - and that is
+// the whole reason this link could not run at 10 Hz:
+// 237 bytes is ~187 ms of air, so ONE copy overran a
+// 100 ms window. Re-read this after any change to the
+// packet, because every number in test 3 moves with it.
+const int TEST_PAYLOAD = 67;
 
 long gFreq = WANT_FREQ_A;
 
@@ -887,19 +901,25 @@ void testParameters() {
 // does something else.
 //
 // It also checks the thing nobody re-checks after the
-// packet grows. Radio.cpp sends TWO copies per
-// SEND_INTERVAL with COPY_GAP between them. At 237 bytes
-// that is 2x187 + 60 = 434 ms inside a 500 ms window -
-// 87% of the air, and 66 ms of margin. The comment in
-// MRCC_GroundStation still says ~73%, which was true
-// when the packet was shorter.
+// packet changes. Radio.cpp sends ONE copy per
+// SEND_INTERVAL. At 67 bytes that is ~60 ms inside a
+// 100 ms window - ~60% of the air, and 40 ms of margin.
 //
-// And TX_MAX_AIR is 300 ms. At SF7 that is comfortable.
-// At SF8 every single transmission would exceed it, the
-// air-time fallback would fire every time, and
+// Those numbers replaced 2x187 + 60 = 434 ms in a 500 ms
+// window, which was 87% duty. The packet went binary to
+// make 10 Hz reachable at all; the duty fell as a side
+// effect, and it is still high enough that this channel
+// holds exactly one airframe.
+//
+// And TX_MAX_AIR is 90 ms now, not 300. That is 1.5x the
+// worst-case air time, which is deliberately tighter than
+// it was: at 10 Hz a fallback that waits 300 ms swallows
+// three send windows. It also means the SF check below
+// bites harder - at SF8 every transmission would exceed
+// it, the air-time fallback would fire every time, and
 // txFallbackCount would climb with telemetry still
-// flowing - which is exactly the kind of fault that
-// never gets noticed.
+// flowing, which is exactly the kind of fault that never
+// gets noticed.
 // =====================================================
 
 void testTransmit() {
@@ -978,19 +998,23 @@ void testTransmit() {
   }
 
   // ---- what this costs on the air ----
-  float twoCopies = 2 * avg + COPY_GAP;
-  float duty = twoCopies / SEND_INTERVAL * 100.0;
+  // Computed from TX_COPIES rather than assuming two, so this stays honest if
+  // the copy count is changed back. The gap only exists between copies.
+  float cycle = TX_COPIES * avg + (TX_COPIES > 1 ? COPY_GAP : 0);
+  float duty = cycle / SEND_INTERVAL * 100.0;
   Serial.println();
-  Serial.printf("  Radio.cpp sends TWO copies + %lu ms gap per %lu ms:\n",
-                COPY_GAP, SEND_INTERVAL);
+  Serial.printf("  Radio.cpp sends %d cop%s%s per %lu ms:\n",
+                TX_COPIES, TX_COPIES == 1 ? "y" : "ies",
+                TX_COPIES > 1 ? " + gap" : "", SEND_INTERVAL);
   Serial.printf("    on air   %.0f ms of %lu   = %.0f%% duty\n",
-                twoCopies, SEND_INTERVAL, duty);
-  Serial.printf("    margin   %.0f ms\n", SEND_INTERVAL - twoCopies);
+                cycle, SEND_INTERVAL, duty);
+  Serial.printf("    margin   %.0f ms\n", SEND_INTERVAL - cycle);
 
-  if (twoCopies > SEND_INTERVAL) {
-    Serial.println("    *** OVER BUDGET. The second copy cannot finish");
-    Serial.println("    *** before the next packet is due. Shorten the");
-    Serial.println("    *** packet, drop to one copy, or slow SEND_INTERVAL.");
+  if (cycle > SEND_INTERVAL) {
+    Serial.println("    *** OVER BUDGET. The packet cannot finish before");
+    Serial.println("    *** the next one is due, so the link will run late");
+    Serial.println("    *** forever while SEND_INTERVAL still claims 10 Hz.");
+    Serial.println("    *** Shorten the packet or slow SEND_INTERVAL.");
   }
   else if (duty > 85.0) {
     Serial.println("    Tight. Any further growth in the packet eats the");

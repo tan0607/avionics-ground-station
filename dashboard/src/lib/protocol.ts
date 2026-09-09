@@ -108,29 +108,37 @@ export const PACKET_HZ = 4
 export const PACKET_INTERVAL_MS = 1000 / PACKET_HZ
 
 /**
- * MEASURED rate of the live MRCC downlink — 2 Hz of new telemetry, each packet
- * transmitted TWICE (~205 ms apart), so the receiver prints ~4 lines/s.
+ * Rate of the live MRCC downlink — 10 Hz, sent once, so the line rate and the
+ * frame rate are the same number.
  *
- * Both numbers are here because mistaking one for the other is exactly what
- * makes the console look broken: a serial monitor scrolling at 4 lines/s next
- * to readouts that change twice a second reads as a dashboard falling behind
- * its radio, when in fact it has already drawn every frame it was sent — half
- * of them were byte-identical repeats. `LINK_HZ` is the rate at which the
- * numbers on screen CAN change; `LINE_HZ` is the rate the monitor shows.
+ * They were 2 Hz and 4 lines/s (every packet sent twice, ~205 ms apart) until
+ * the vehicle moved to a binary downlink. The ASCII packet was 149-187 ms of
+ * air at SF7/BW250, which does not fit a 100 ms window at any power; 52-67
+ * bytes of binary is ~48-60 ms, and the ground station expands it back into the
+ * same line this console has always read.
  *
- * Source: backend session.PACKET_DESC["mrcc"], measured off /stats and the
- * onboard timestamps in flights/2026-08-19T05-54-40Z. Verify against the RATE
- * readout in the top bar rather than trusting this constant — it is a
- * transmitter setting and this transmitter changes.
+ * Both constants stay because mistaking one for the other is exactly what makes
+ * the console look broken: a serial monitor scrolling faster than the readouts
+ * change reads as a dashboard falling behind its radio, when in fact it has
+ * drawn every frame it was sent. `LINK_HZ` is the rate at which the numbers on
+ * screen CAN change; `LINE_HZ` is the rate the monitor shows. They are equal
+ * today and there is no reason to assume they stay that way.
+ *
+ * Source: backend session.PACKET_DESC["mrcc"]. Verify against the RATE readout
+ * in the top bar rather than trusting this constant — it is a transmitter
+ * setting, this transmitter changes, and every previous value here was wrong
+ * for a while before anyone measured it.
  */
-export const LINK_HZ = 2
+export const LINK_HZ = 10
 export const LINK_INTERVAL_MS = 1000 / LINK_HZ
-export const LINE_HZ = 4
+export const LINE_HZ = 10
 
 /**
  * Link is considered stale after this many ms with no packet (GS plan §5,
- * DESIGN §3) — six frame intervals at the measured 2 Hz, so an ordinary
- * dropout never flickers the whole top bar into alarm.
+ * DESIGN §3). Deliberately left at 3000 ms across the move to 10 Hz: it was
+ * six frame intervals and is now thirty, which makes it MORE tolerant of an
+ * ordinary dropout rather than less, and the number that matters to an
+ * operator is "how long has it been quiet", in seconds, not in frames.
  */
 export const LINK_STALE_MS = 3000
 

@@ -61,25 +61,33 @@ PACKET_DESC = {
     },
     "mrcc": {
         "codec": "mrcc",
-        "framing": "newline-delimited ASCII key=value",
-        # MEASURED, not assumed: a 20 s /stats delta on 2026-08-20 read 2.00
-        # unique frames/s and 2.00 duplicates/s, and the onboard timestamps in
-        # flights/2026-08-19T05-54-40Z step by exactly 500 ms. This field used to
-        # say 1 Hz and the dashboard's PACKET_HZ said 4; the link was doing
-        # neither, and nothing in the system was measuring it to find out.
-        "rate_hz": 2,
-        # Every packet is transmitted TWICE, ~205 ms apart, so the receiver
-        # prints ~4 lines/s. Both numbers are recorded because they get mistaken
-        # for each other constantly: the line rate is what a serial monitor
-        # shows you, the frame rate is how often the console can actually
-        # change, and expecting the first from the second reads as a ground
-        # station lagging its own radio.
-        "tx_repeat": 2,
-        "line_rate_hz": 4,
+        "framing": "newline-delimited ASCII key=value, expanded by the ground "
+                   "station from a 52-67 byte binary frame",
+        # 10 Hz, single copy. It was 2 Hz sent twice, MEASURED (a 20 s /stats
+        # delta on 2026-08-20 read 2.00 unique frames/s and 2.00 duplicates/s,
+        # and the onboard timestamps in flights/2026-08-19T05-54-40Z step by
+        # exactly 500 ms).
+        #
+        # The rate moved because the PACKET did. At SF7/BW250 the ASCII packet
+        # was 149-187 ms of air, so one copy overran a 100 ms window and 10 Hz
+        # was unreachable at any power. The vehicle now sends binary (~48-60 ms)
+        # and the ground station expands it, which is why this entry still says
+        # `mrcc` and why nothing downstream of the receiver changed.
+        #
+        # VERIFY THIS AGAINST /stats RATHER THAN TRUSTING IT. It is a
+        # transmitter setting, this transmitter changes, and every previous
+        # value in this field was wrong for a while before anyone measured it.
+        "rate_hz": 10,
+        # No repeat. The two numbers stay separate because they were different
+        # for most of this project's life and get mistaken for each other
+        # constantly: the line rate is what a serial monitor shows you, the
+        # frame rate is how often the console can actually change.
+        "tx_repeat": 1,
+        "line_rate_hz": 10,
         "protocol": "shared/protocol/mrcc.py",
-        "note": "no CRC on the payload; health is inferred per-bit, not reported; "
-                "each packet is sent twice — LossTracker counts the repeat as a "
-                "duplicate, not as a frame",
+        "note": "no CRC on the payload beyond the radio's own; health is "
+                "inferred per-bit, not reported; sent once — the redundancy "
+                "the old second copy bought is bought by the 10 Hz rate",
     },
 }
 

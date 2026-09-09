@@ -65,11 +65,28 @@ class NoArmSwitchSenseTest(unittest.TestCase):
         self.assertIn("armFlight()", auto)
 
     def test_mrcc_packet_has_original_precision_and_no_switch_field(self) -> None:
+        """Precision is a SCALE FACTOR now, not a printf width.
+
+        The downlink is binary, so `GA=%.1f` no longer appears in the
+        transmitter - it appears in the ground station, which expands the frame.
+        What the transmitter has to get right is the quantisation that feeds it:
+        a tenth of a metre for GPS altitude, a hundredth of a m/s2 for accel.
+        Both ends are asserted because either one drifting alone silently
+        changes the precision of the number an operator reads.
+        """
         packet = function_body(self.radio, "static void buildTelemetryPacket()")
         self.assertNotIn("SW=%", packet)
         self.assertNotIn("armSwitch", packet)
-        self.assertIn("GA=%.1f", packet)
-        self.assertIn("AX=%.2f,AY=%.2f,AZ=%.2f", packet)
+
+        self.assertIn("tlmQ16(gpsAltitude, 10.0f)", packet)
+        for axis in ("ax", "ay", "az"):
+            self.assertIn(f"{axis}, 100.0f)", packet)
+
+        ground = (Path(__file__).resolve().parents[1]
+                  / "MRCC_GroundStation" / "MRCC_GroundStation.ino").read_text()
+        self.assertNotIn("SW=%", ground)
+        self.assertIn("GA=%.1f", ground)
+        self.assertIn("AX=%.2f,AY=%.2f,AZ=%.2f", ground)
 
     def test_pyro_doctor_only_tests_the_mosfet_output(self) -> None:
         self.assertNotIn("ARM_SW_", self.doctor)

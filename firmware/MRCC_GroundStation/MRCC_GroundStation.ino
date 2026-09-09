@@ -11,6 +11,27 @@
 // repo), so the len=/RSSI=/SNR= prefix is part of the
 // contract - do not reorder or rename it.
 //
+// WHAT ARRIVES ON THE AIR IS NO LONGER THAT LINE. The
+// vehicle downlinks a 52-67 byte binary packet now, and
+// this sketch expands it back into the identical ASCII
+// above. The ASCII packet cost 185-237 bytes, which is
+// 149-187 ms of air, which does not fit in the 100 ms
+// window a 10 Hz link has - so the format had to shrink,
+// and this is where it grows back.
+//
+// Doing the expansion HERE rather than on the laptop is
+// the whole reason the rest of the system did not have
+// to change: mrcc.py, the loss tracker, telemetry.csv,
+// the WebSocket and the dashboard all still consume the
+// one shape they already knew. The binary exists only
+// between the two radios.
+//
+// An ASCII packet still decodes. A vehicle running the
+// old firmware is passed through untouched (see loop),
+// so a box flashed with this sketch talks to either
+// build - which matters on a launch day where the two
+// airframes may not be flashed from the same commit.
+//
 // ONE BOX, TWO ROCKETS: the channel is switchable at
 // runtime from the serial monitor (press A or B), so a
 // single ground station can cover both airframes across
@@ -27,6 +48,8 @@
 #include <SPI.h>
 #include <LoRa.h>
 #include <Preferences.h>
+#include <math.h>
+#include <string.h>
 
 
 // -----------------------------------------------------
@@ -46,16 +69,18 @@
 // box would decode BOTH rockets - PKT jumps, the loss
 // count turns to noise, the map hops between airframes -
 // while the two transmitters collide on air and neither
-// link survives. One rocket alone already radiates 87% of
-// the time - two 187 ms copies plus the 60 ms COPY_GAP,
-// inside a 500 ms window, leaving 66 ms of margin - so
-// there is no room to share.
+// link survives. One rocket alone radiates ~60% of the
+// time - a single 48-60 ms binary packet inside a 100 ms
+// window - so there is no room to share.
 //
-// That figure used to read ~73%, from two ~182 ms copies
-// and no gap. The gap was always there, and the packet
-// has since grown to 237 bytes. TX_Doctor's test 3
-// measures it on the bench; re-read it after any change
-// to the packet, because the number moves with it.
+// That figure has read 73% and then 87%, from two ASCII
+// copies plus COPY_GAP in a 500 ms window. The 10 Hz
+// binary downlink brought it DOWN to ~60%, and it still
+// does not make room: at 60% duty a second transmitter
+// on this channel collides with well over half of these
+// packets. TX_Doctor's test 3 measures it on the bench;
+// re-read it after any change to the packet, because the
+// number moves with it.
 //
 // Both sit inside Malaysia's 433 MHz ISM allocation
 // (MCMC: 433.05 - 434.79 MHz) and are 800 kHz apart,
@@ -141,8 +166,17 @@ static int gChannel = VEHICLE;    // index into CHANNELS
 
 
 volatile bool gotPkt = false;
-char    gBuf[256];
+// BYTES. The payload is binary and 0x00 is a legal value inside it, so nothing
+// here may treat this as a C string. gLen is the authority on length.
+uint8_t gBuf[256];
 int     gLen  = 0;
+
+// Where the decoded ASCII line is built. 320 is comfortably above the ~215 the
+// widest possible expansion produces (every field at its format maximum, both
+// optional blocks present) and well under the 255-byte limit that applied to
+// the packet when the ASCII WAS the packet - that limit was the radio's, and
+// this string never goes near a radio.
+char    gLine[320];
 int     gRssi = 0;
 float   gSnr  = 0;
 
@@ -171,6 +205,224 @@ static Preferences gPrefs;
 static const char *NVS_NAMESPACE = "mrccgs";
 static const char *NVS_KEY_CH    = "ch";
 
+// -----------------------------------------------------
+// WIRE FORMAT - the binary telemetry packet
+//
+// THIS BLOCK IS DUPLICATED FROM
+// MRCC_FlightComputer_A/src/Config.h, for the same
+// reason the frequencies above are: Arduino builds each
+// sketch on its own and there is no header to share.
+// CHANGE ONE, CHANGE THE OTHER.
+//
+// A mismatch here is NOT the silent failure a wrong
+// SF or frequency is. The magic byte and the length
+// check below reject a packet this sketch cannot read,
+// and TLM_VERSION rejects one from a build that changed
+// the layout - so the box says nothing rather than
+// printing a confidently mis-read line. The full field
+// table, and the reasoning for every scale factor, is
+// in Config.h.
+// -----------------------------------------------------
+
+#define TLM_MAGIC    0xA5
+#define TLM_VERSION  1
+
+#define TLM_BASE_LEN 52
+#define TLM_ARM_LEN  5
+#define TLM_SD_LEN   10
+
+#define TLM_FLAG_ARMED    0x01
+#define TLM_FLAG_FIRED    0x02
+#define TLM_FLAG_GPS_DATA 0x04
+#define TLM_FLAG_GPS_FIX  0x08
+#define TLM_FLAG_SD_OK    0x10
+#define TLM_FLAG_BARO_OK  0x20
+#define TLM_FLAG_IMU_OK   0x40
+
+#define TLM_BLOCK_ARM  0x01
+#define TLM_BLOCK_SD   0x02
+
+#define TLM_NAN_I16  ((int16_t) -32768)
+#define TLM_NAN_I32  ((int32_t) -2147483647 - 1)
+#define TLM_NAN_U16  ((uint16_t) 0xFFFF)
+
+
+// ---- TLM DECODE BEGIN ----
+
+// Mirrors Flight.cpp's stateName(). firmware/tests/test_downlink_codec.py reads
+// that function and fails if the two tables ever disagree - the state word is
+// what mrcc.py matches on to decide whether a vehicle is armed, so a name that
+// drifts here does not produce a wrong label, it produces a rocket that reports
+// PAD with a live pyro bus.
+static const char *tlmStateName(uint8_t s) {
+  switch (s) {
+    case 0: return "PAD";
+    case 1: return "ARMED";
+    case 2: return "BOOST";
+    case 3: return "COAST";
+    case 4: return "APOGEE";
+    case 5: return "DESCENT";
+    case 6: return "LANDED";
+    default: return "?";
+  }
+}
+
+static inline uint8_t tlmGetU8(const uint8_t *b, int &i) {
+  return b[i++];
+}
+static inline uint16_t tlmGetU16(const uint8_t *b, int &i) {
+  uint16_t v = (uint16_t) b[i] | ((uint16_t) b[i + 1] << 8);
+  i += 2;
+  return v;
+}
+static inline uint32_t tlmGetU32(const uint8_t *b, int &i) {
+  uint32_t v = 0;
+  for (int k = 0; k < 4; k++) v |= ((uint32_t) b[i + k]) << (8 * k);
+  i += 4;
+  return v;
+}
+static inline int16_t tlmGetI16(const uint8_t *b, int &i) {
+  return (int16_t) tlmGetU16(b, i);
+}
+static inline int32_t tlmGetI32(const uint8_t *b, int &i) {
+  return (int32_t) tlmGetU32(b, i);
+}
+static inline float tlmGetF32(const uint8_t *b, int &i) {
+  uint32_t bits = tlmGetU32(b, i);
+  float v;
+  memcpy(&v, &bits, 4);
+  return v;
+}
+
+// The sentinels come back as NAN so that %f prints `nan`, which is what the
+// ASCII packet printed for a dead sensor and what mrcc.py already handles. A
+// sentinel decoded as its literal value would be -3276.8 - a number, in range,
+// and wrong.
+static inline float tlmDeq16(int16_t v, float scale) {
+  return v == TLM_NAN_I16 ? NAN : (float) v / scale;
+}
+static inline double tlmDeq32(int32_t v, double scale) {
+  return v == TLM_NAN_I32 ? NAN : (double) v / scale;
+}
+static inline float tlmDeqDeg(uint16_t v) {
+  return v == TLM_NAN_U16 ? NAN : (float) v;
+}
+
+
+// Expand one binary packet into the ASCII line the rest of the system reads.
+// Returns the length written, or -1 if the packet is not one of ours.
+//
+// REJECTION IS THE POINT of the checks at the top. This box hears anything on
+// the channel whose SF/BW/CR/syncword match, and the old failure mode for a
+// stray frame was a half-parsed line on the laptop. A frame that is not
+// TLM_MAGIC, not TLM_VERSION, or not long enough for the fields it claims is
+// dropped here and counted, rather than expanded into plausible-looking
+// telemetry from whatever bytes happened to arrive.
+static int tlmDecode(const uint8_t *b, int len, char *out, size_t outSize) {
+  if (len < TLM_BASE_LEN)        return -1;
+  if (b[0] != TLM_MAGIC)         return -1;
+  if (b[1] != TLM_VERSION)       return -1;
+
+  int i = 2;
+
+  const uint32_t pkt   = tlmGetU32(b, i);
+  const uint32_t tMs   = tlmGetU32(b, i);
+  const uint8_t  state = tlmGetU8(b, i);
+  const uint8_t  flags = tlmGetU8(b, i);
+  const uint8_t  sat   = tlmGetU8(b, i);
+  const uint8_t  blocks = tlmGetU8(b, i);
+
+  const float  alt    = tlmGetF32(b, i);
+  const float  maxAlt = tlmGetF32(b, i);
+  const float  vz     = tlmDeq16(tlmGetI16(b, i), 10.0f);
+  const double lat    = tlmDeq32(tlmGetI32(b, i), 100000.0);
+  const double lon    = tlmDeq32(tlmGetI32(b, i), 100000.0);
+  const float  ga     = tlmDeq16(tlmGetI16(b, i), 10.0f);
+  const float  gs     = tlmDeq16(tlmGetI16(b, i), 10.0f);
+  const float  crs    = tlmDeqDeg(tlmGetU16(b, i));
+  const float  ax     = tlmDeq16(tlmGetI16(b, i), 100.0f);
+  const float  ay     = tlmDeq16(tlmGetI16(b, i), 100.0f);
+  const float  az     = tlmDeq16(tlmGetI16(b, i), 100.0f);
+  const float  gx     = tlmDeq16(tlmGetI16(b, i), 1.0f);
+  const float  gy     = tlmDeq16(tlmGetI16(b, i), 1.0f);
+  const float  gz     = tlmDeq16(tlmGetI16(b, i), 1.0f);
+  const float  hdg    = tlmDeqDeg(tlmGetU16(b, i));
+
+  // A block the sender flagged but did not fit is a torn packet, not a short
+  // one. Refuse the whole frame rather than emit the base fields and silently
+  // drop a countdown the operator is watching.
+  int need = TLM_BASE_LEN;
+  if (blocks & TLM_BLOCK_ARM) need += TLM_ARM_LEN;
+  if (blocks & TLM_BLOCK_SD)  need += TLM_SD_LEN;
+  if (len < need) return -1;
+
+  int n = snprintf(
+    out, outSize,
+    "MRCC,PKT=%lu,T=%.1f,ST=%s,AL=%.1f,VZ=%.1f,MX=%.1f,AR=%d,FI=%d,"
+    "GD=%d,GF=%d,SAT=%d,"
+    "LAT=%.5f,LON=%.5f,GA=%.1f,GS=%.1f,CRS=%.0f,"
+    "AX=%.2f,AY=%.2f,AZ=%.2f,GX=%.0f,GY=%.0f,GZ=%.0f,"
+    "HDG=%.0f,SD=%d,BA=%d,IM=%d",
+    (unsigned long) pkt, tMs / 1000.0,
+    tlmStateName(state), alt, vz, maxAlt,
+    (flags & TLM_FLAG_ARMED)    ? 1 : 0,
+    (flags & TLM_FLAG_FIRED)    ? 1 : 0,
+    (flags & TLM_FLAG_GPS_DATA) ? 1 : 0,
+    (flags & TLM_FLAG_GPS_FIX)  ? 1 : 0,
+    (int) sat,
+    lat, lon, ga, gs, crs,
+    ax, ay, az, gx, gy, gz, hdg,
+    (flags & TLM_FLAG_SD_OK)   ? 1 : 0,
+    (flags & TLM_FLAG_BARO_OK) ? 1 : 0,
+    (flags & TLM_FLAG_IMU_OK)  ? 1 : 0
+  );
+  if (n < 0 || (size_t) n >= outSize) return -1;
+
+  // Optional blocks, in the order the ASCII packet always carried them: the
+  // PAD countdown first, the recorder details second.
+  if (blocks & TLM_BLOCK_ARM) {
+    const uint8_t  aw = tlmGetU8(b, i);
+    const uint16_t ad = tlmGetU16(b, i);
+    const uint16_t as = tlmGetU16(b, i);
+    int m = snprintf(out + n, outSize - n, ",AW=%u,AD=%lu,AS=%lu",
+                     (unsigned int) aw, (unsigned long) ad, (unsigned long) as);
+    if (m < 0 || (size_t)(n + m) >= outSize) return -1;
+    n += m;
+  }
+
+  if (blocks & TLM_BLOCK_SD) {
+    const int16_t  sdf = tlmGetI16(b, i);
+    const uint32_t sdl = tlmGetU32(b, i);
+    const uint32_t sde = tlmGetU32(b, i);
+    int m = snprintf(out + n, outSize - n, ",SDF=%d,SDL=%lu,SDE=%lu",
+                     (int) sdf, (unsigned long) sdl, (unsigned long) sde);
+    if (m < 0 || (size_t)(n + m) >= outSize) return -1;
+    n += m;
+  }
+
+  // The over-air byte count, which `len=` can no longer carry. mrcc.py checks
+  // len= against the length of THIS string as a splice guard, so it has to
+  // describe the ASCII - and that leaves nothing saying how many bytes the
+  // frame actually cost on the air, which is the number the duty-cycle
+  // argument in Config.h is made of and the one TX_Doctor's test 3 is checked
+  // against. It rides here instead. mrcc.py files unknown keys in `extra`, so
+  // nothing downstream needed teaching about it.
+  int m = snprintf(out + n, outSize - n, ",AIR=%d", len);
+  if (m < 0 || (size_t)(n + m) >= outSize) return -1;
+  n += m;
+
+  return n;
+}
+
+// ---- TLM DECODE END ----
+
+
+// Frames that were not ours, or were torn. Reported by '?' rather than printed
+// per-packet: on a busy channel this could otherwise be the loudest thing on
+// the console, and the number matters more than the individual events.
+static unsigned long gBadPkts = 0;
+
+
 void onRx(int n) {
   if (n <= 0 || n > 255 || gotPkt) return;   // 上一包还没处理完就跳过
   int i = 0;
@@ -179,8 +431,8 @@ void onRx(int n) {
   // which truncated a long packet AND reported the truncated length - so
   // the len= integrity check on the laptop passed and the frame decoded
   // as a clean short one, missing its tail.
-  while (LoRa.available() && i < 255) gBuf[i++] = (char)LoRa.read();
-  gBuf[i] = '\0';
+  while (LoRa.available() && i < 255) gBuf[i++] = (uint8_t)LoRa.read();
+  gBuf[i] = 0;          // only so the ASCII passthrough can print it as a string
   gLen  = i;
   gRssi = LoRa.packetRssi();
   gSnr  = LoRa.packetSnr();
@@ -241,14 +493,15 @@ static void applyChannel(int idx, bool announce) {
     if (gPrefs.getInt(NVS_KEY_CH, -1) != idx) gPrefs.putInt(NVS_KEY_CH, idx);
   }
   gPktCount = 0;
+  gBadPkts  = 0;
 }
 
 
 static void printStatus() {
-  Serial.printf("### GS STATUS channel=%s freq=%.3fMHz pkts=%lu "
+  Serial.printf("### GS STATUS channel=%s freq=%.3fMHz pkts=%lu bad=%lu "
                 "last_rssi=%d last_snr=%.1f ###\n",
                 CHANNELS[gChannel].name, CHANNELS[gChannel].hz / 1e6,
-                gPktCount, gRssi, gSnr);
+                gPktCount, gBadPkts, gRssi, gSnr);
 }
 
 
@@ -327,8 +580,29 @@ void loop() {
   handleSerial();
 
   if (gotPkt) {
-    gPktCount++;
-    Serial.printf("len=%d RSSI=%d SNR=%.1f | %s\n", gLen, gRssi, gSnr, gBuf);
+    // Which format arrived. A legacy ASCII packet opens with "MRCC" and is
+    // passed through byte for byte; a binary one opens with TLM_MAGIC and is
+    // expanded. Nothing else is printed at all - see tlmDecode.
+    //
+    // `len=` is the length of the ASCII, NOT of the frame, and that is a
+    // contract rather than a convenience: mrcc.py compares it against the
+    // characters it received and rejects the line if they disagree, which is
+    // how a spliced or half-written line is caught. The frame's real size
+    // travels in the AIR= field tlmDecode appends.
+    if (gLen >= 4 && memcmp(gBuf, "MRCC", 4) == 0) {
+      gPktCount++;
+      Serial.printf("len=%d RSSI=%d SNR=%.1f | %s\n",
+                    gLen, gRssi, gSnr, (const char *) gBuf);
+    }
+    else {
+      int n = tlmDecode(gBuf, gLen, gLine, sizeof(gLine));
+      if (n > 0) {
+        gPktCount++;
+        Serial.printf("len=%d RSSI=%d SNR=%.1f | %s\n", n, gRssi, gSnr, gLine);
+      } else {
+        gBadPkts++;
+      }
+    }
     gotPkt = false;
 
     digitalWrite(PIN_LED, HIGH);            // link is alive, at a glance

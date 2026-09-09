@@ -33,8 +33,11 @@ Every packet is a fixed **32 bytes**:
 
 Rate: 4 Hz nominal (~128 B/s), on a bare SX1278 at SF7 / BW 125 kHz / CR 4-5
 (~72 ms on air per frame) — the settings the removed binary firmware used. The
-link that actually flies runs at BW 250 kHz with hardware CRC on and carries
-MRCC text at 2 Hz; see `firmware/README.md` for the current parameters. Either
+link that actually flies runs at BW 250 kHz with hardware CRC on and carries a
+52-67 byte MRCC binary frame at 10 Hz, which the ground station expands into the
+ASCII `shared/protocol/mrcc.py` parses; see `firmware/README.md` for the current
+parameters. That frame is NOT the format below — it is a different layout with
+its own field table, specified in `MRCC_FlightComputer_A/src/Config.h`. Either
 way the radio is a transport detail and does not affect the bytes below.
 
 ## Field table (BODY — offsets are relative to frame start)
