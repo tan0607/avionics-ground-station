@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <FS.h>
 #include <SD.h>
+#include "CheckedLogFile.h"
 
 // =====================================================
 // STORAGE - SD card probe, mount, logging, recovery
@@ -10,11 +11,13 @@
 // =====================================================
 
 extern SPIClass sdSPI;
-extern File     logFile;
+extern CheckedLogFile logFile;
 
 extern char          logFileName[32];
-extern unsigned long logLineCount;
+extern unsigned long logLineCount; // complete rows verified by checkpoint readback
 extern unsigned long sdErrorCount;
+extern unsigned long sdCheckpointLastUs;
+extern unsigned long sdCheckpointMaxUs;
 
 // Which /FLIGHT%03d.CSV the name above resolved to, 1..999. Kept beside the
 // name because the name cannot go on the air: the downlink parses numeric

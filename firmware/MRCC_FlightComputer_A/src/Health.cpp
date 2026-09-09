@@ -199,6 +199,7 @@ void serviceHealth() {
 // =====================================================
 
 void printStatus() {
+  flushSD(); // same checked checkpoint as unattended logging
   unsigned long now = millis();
   unsigned long dt  = now - lastRateTime;
 
@@ -337,8 +338,6 @@ void printStatus() {
   if (imuOK) printFilterStatus();
 
   if (sdOK && logFile) {
-    logFile.flush();
-
     Serial.print("[SD]  ");
     Serial.print(logFileName);
     Serial.print(" | lines=");
@@ -348,7 +347,12 @@ void printStatus() {
     Serial.print(" | rate=");
     Serial.print(logHz, 1);
     Serial.print("Hz | err=");
-    Serial.println(sdErrorCount);
+    Serial.print(sdErrorCount);
+    Serial.print(" | checkpoint=");
+    Serial.print(sdCheckpointLastUs / 1000.0, 1);
+    Serial.print("ms max=");
+    Serial.print(sdCheckpointMaxUs / 1000.0, 1);
+    Serial.println("ms");
   }
 
   if (txBusyCount || txTimeoutCount || txFallbackCount) {

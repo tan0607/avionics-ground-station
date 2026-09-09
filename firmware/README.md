@@ -2,6 +2,20 @@
 
 Separate flight computer sketches for vehicles A and B, plus the ground station.
 
+### SD persistence checkpoints (2026-09-09)
+
+SD logging now closes, reads back the new batch, and reopens for append at the
+existing one-second flush cadence. `SDL` counts checkpoint-verified rows;
+accepted but pending writes are not yet counted. A failed checkpoint marks SD
+down and reports an error. Automatic serial status includes last/max checkpoint
+duration. This is implemented for production A/B and HandMotionTest A/B;
+the latter retains `HANDxxx.CSV` names.
+
+See [SD persistence validation and bench procedure](../docs/validation/2026-09-09-sd-checkpoint-persistence.md).
+Actual power-off persistence and the effect of synchronous SD work on sensor /
+flight-loop timing still require bench validation. Do not infer saved data from
+the displayed Hz alone.
+
 ### A/B auto-arm and dashboard countdown (2026-09-07)
 
 Normal prelaunch arming requires all three: **the original 180 s power-session wait**, **the

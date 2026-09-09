@@ -1,5 +1,11 @@
 # Validation — 2026-09-08
 
+Later SD code changes are recorded in the
+[2026-09-09 checkpoint validation](../../docs/validation/2026-09-09-sd-checkpoint-persistence.md).
+The results and `tested-source-sha256.json` below describe their historical
+revision, not the new SD checkpoint code. The pre-checkpoint active production
+baseline is preserved in `source-snapshot-2026-09-09-pre-sd-checkpoint.json`.
+
 Status: source and build verification complete; **not uploaded and not bench-tested**.
 
 - `python3 -m unittest discover -s firmware/HandMotionTest/tests -p 'test_*.py' -v`: **13 tests passed** (9.767 s).

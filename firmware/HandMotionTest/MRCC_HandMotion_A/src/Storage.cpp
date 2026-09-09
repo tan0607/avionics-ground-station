@@ -3,18 +3,24 @@
 #include "Pyro.h"
 #include "Config.h"
 #include "State.h"
+#include "LogCheckpoint.h"
 
 #ifndef HSPI
 #define HSPI 1
 #endif
 
 SPIClass sdSPI(HSPI);
-File     logFile;
+CheckedLogFile logFile;
+static LogFileSystem LogFiles;
 
 char          logFileName[32] = "";
 unsigned long logLineCount    = 0;
 unsigned long sdErrorCount    = 0;
+unsigned long sdCheckpointLastUs = 0;
+unsigned long sdCheckpointMaxUs  = 0;
 int           logFileIndex    = 0;
+
+static LogCheckpoint logCheckpoint;
 
 uint8_t probeResult = PROBE_NO_MODULE;
 
@@ -25,6 +31,7 @@ static void logOneLine();
 static bool testMisoLine(bool verbose);
 static bool testCardHandshake(bool verbose);
 static void verifyWrite();
+static void storageFailure(const char* reason, int ioError = 0);
 
 
 // =====================================================
@@ -317,7 +324,8 @@ void startNewLogFile() {
   if (!sdOK) return;
 
   if (logFile) {
-    logFile.flush();
+    flushSD();
+    if (!sdOK) return;
     logFile.close();
   }
 
@@ -333,7 +341,7 @@ void startNewLogFile() {
   Serial.print("[SD] Log file: ");
   Serial.println(logFileName);
 
-  logFile = SD.open(logFileName, FILE_WRITE);
+  logFile = LogFiles.open(logFileName, FILE_WRITE);
 
   if (!logFile) {
     Serial.println("[SD] ERROR - cannot create file");
@@ -365,42 +373,53 @@ void startNewLogFile() {
   logFile.print(" RESET=");
   logFile.println(resetReasonName);
 
-  logFile.flush();
-  logFile.close();
+  if (!logFile.flush()) { storageFailure("header write/fsync", logFile.errorNumber()); return; }
+  if (!logFile.close()) { storageFailure("header close", logFile.errorNumber()); return; }
 
   logLineCount = 0;
   sdErrorCount = 0;
+  sdCheckpointLastUs = sdCheckpointMaxUs = 0;
 
   verifyWrite();
+  if (!sdOK) { sdErrorCount++; return; }
 
-  logFile = SD.open(logFileName, FILE_APPEND);
+  logFile = LogFiles.open(logFileName, FILE_APPEND);
 
   if (!logFile) {
     Serial.println("[SD] ERROR - cannot reopen for append");
+    sdErrorCount++;
     sdOK = false;
   }
 }
 
 
 static void verifyWrite() {
-  File f = SD.open(logFileName, FILE_READ);
+  CheckedLogFile f = LogFiles.open(logFileName, FILE_READ);
 
   if (!f) {
-    Serial.println("[SD] VERIFY FAILED - cannot reopen");
+    Serial.print("[SD] VERIFY FAILED - cannot reopen | io_errno=");
+    Serial.println(f.errorNumber());
     sdOK = false;
     return;
   }
 
-  String firstLine        = f.readStringUntil('\n');
+  uint8_t prefix[8];
+  int received = f.read(prefix, sizeof(prefix));
   unsigned long sizeOnCard = f.size();
-  f.close();
+  bool closed = f.close();
+  if (!closed || f.errorNumber()) {
+    Serial.print("[SD] VERIFY FAILED - header read/close | io_errno=");
+    Serial.println(f.errorNumber());
+    sdOK = false; return;
+  }
 
   Serial.print("[SD] Read back ");
   Serial.print(sizeOnCard);
   Serial.println(" bytes from the card");
 
-  if (firstLine.startsWith("PKT,T,GD")) {
-    Serial.println("[SD] *** WRITE VERIFIED ***");
+  if (received == 8 && memcmp(prefix, "PKT,T,GD", 8) == 0) {
+    logCheckpoint.reset(sizeOnCard);
+    Serial.println("[SD] *** HEADER VERIFIED - data verified at each checkpoint ***");
   }
   else {
     Serial.println("[SD] VERIFY FAILED - data did not match");
@@ -412,6 +431,32 @@ static void verifyWrite() {
 // =====================================================
 // LOGGING - fixed 10 Hz, drift free
 // =====================================================
+
+static void storageFailure(const char* reason, int ioError) {
+  sdErrorCount++;
+  sdOK = false;
+  if (logFile) logFile.close();
+  Serial.print("[SD] CHECKPOINT/WRITE FAILED: ");
+  Serial.print(reason);
+  Serial.print(" | verified lines=");
+  Serial.print(logLineCount);
+  Serial.print(" | file=");
+  Serial.print(logFileName);
+  Serial.print(" | base=");
+  Serial.print(static_cast<unsigned long>(logCheckpoint.committedBytes()));
+  Serial.print(" expected=");
+  Serial.print(static_cast<unsigned long>(logCheckpoint.expectedBytes()));
+  Serial.print(" actual=");
+  if (logCheckpoint.readbackSizeKnown()) {
+    Serial.print(static_cast<unsigned long>(logCheckpoint.readbackBytes()));
+  } else {
+    Serial.print("unknown");
+  }
+  Serial.print(" pending=");
+  Serial.print(logCheckpoint.pendingLines());
+  Serial.print(" | io_errno=");
+  Serial.println(ioError);
+}
 
 void serviceLogging() {
   if (millis() - lastLog < LOG_INTERVAL) return;
@@ -458,20 +503,24 @@ static void logOneLine() {
     return;
   }
 
-  size_t written = logFile.println(line);
-
-  if (written < (size_t)len) {
-    sdErrorCount++;
-    return;
+  if (!logCheckpoint.append(logFile, line, static_cast<size_t>(len))) {
+    storageFailure(logCheckpoint.error(), logCheckpoint.ioErrorNumber());
   }
-
-  logLineCount++;
 }
 
 
 void flushSD() {
-  if (!sdOK || !logFile) return;
-  logFile.flush();
+  if (!sdOK || !logFile || !logCheckpoint.pending()) return;
+  unsigned long started = micros();
+  bool ok = logCheckpoint.commit(logFile, LogFiles, logFileName);
+  sdCheckpointLastUs = micros() - started;
+  if (sdCheckpointLastUs > sdCheckpointMaxUs) sdCheckpointMaxUs = sdCheckpointLastUs;
+  if (!ok) {
+    storageFailure(logCheckpoint.error(), logCheckpoint.ioErrorNumber());
+    return;
+  }
+  // Only readback-verified rows are reported to serial and SDF/SDL/SDE.
+  logLineCount = logCheckpoint.verifiedLines();
 }
 
 
@@ -487,7 +536,8 @@ void dumpLogFile() {
   }
 
   if (logFile) {
-    logFile.flush();
+    flushSD();
+    if (!sdOK) return;
     logFile.close();
   }
 
@@ -520,8 +570,8 @@ void dumpLogFile() {
   Serial.println("============ END FILE DUMP ============");
   Serial.println();
 
-  logFile = SD.open(logFileName, FILE_APPEND);
-  if (!logFile) sdOK = false;
+  logFile = LogFiles.open(logFileName, FILE_APPEND);
+  if (!logFile) storageFailure("dump append reopen", logFile.errorNumber());
 }
 
 
@@ -531,7 +581,8 @@ void listFiles() {
     return;
   }
 
-  if (logFile) logFile.flush();
+  flushSD();
+  if (!sdOK) return;
 
   File root = SD.open("/");
 

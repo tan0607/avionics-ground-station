@@ -105,20 +105,24 @@ const ARCHIVE_POLL_MS = 5000
 export function useRecordedFlights(): ArchiveState {
   const [status, setStatus] = useState<ArchiveState["status"]>("loading")
   const [data, setData] = useState<ArchivePayload | null>(null)
-  const pending = useRef(false)
+  const pending = useRef<AbortController | null>(null)
 
   const refresh = useCallback(async () => {
     if (pending.current) return
-    pending.current = true
+    const controller = new AbortController()
+    pending.current = controller
     try {
-      const response = await fetch(apiUrl("/flights"), { cache: "no-store" })
+      const response = await fetch(apiUrl("/flights"), { cache: "no-store", signal: controller.signal })
       if (!response.ok) throw new Error(String(response.status))
-      setData((await response.json()) as ArchivePayload)
+      const next = (await response.json()) as ArchivePayload
+      if (controller.signal.aborted) return
+      setData(next)
       setStatus("ok")
     } catch {
+      if (controller.signal.aborted) return
       setStatus("unreachable")
     } finally {
-      pending.current = false
+      if (pending.current === controller) pending.current = null
     }
   }, [])
 
@@ -129,6 +133,9 @@ export function useRecordedFlights(): ArchiveState {
         const response = await fetch(apiUrl(path), { method: "DELETE" })
         const body = (await response.json().catch(() => ({}))) as { error?: string }
         if (!response.ok) return { ok: false, error: body.error ?? `HTTP ${response.status}` }
+        // An index read started before deletion must not restore the removed row.
+        pending.current?.abort()
+        pending.current = null
         // Drop it locally straight away: the 5 s poll would otherwise leave a
         // deleted flight on screen long enough to be clicked again.
         const gone = (f: RecordedFlight) =>
@@ -156,7 +163,11 @@ export function useRecordedFlights(): ArchiveState {
   useEffect(() => {
     refresh()
     const id = window.setInterval(refresh, ARCHIVE_POLL_MS)
-    return () => window.clearInterval(id)
+    return () => {
+      window.clearInterval(id)
+      pending.current?.abort()
+      pending.current = null
+    }
   }, [refresh])
 
   return { status, data, refresh, remove }
