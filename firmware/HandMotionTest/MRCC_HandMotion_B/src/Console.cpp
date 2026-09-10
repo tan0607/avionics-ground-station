@@ -19,10 +19,10 @@ const unsigned long TEST_CONFIRM_WINDOW = 5000;
 
 void printMenu() {
   Serial.println();
-  Serial.println("-------- HAND TEST / GPIO LOW ----------");
+  Serial.println("------ HAND TEST / BENCH PULSE ----------");
   Serial.println(" A = ARM   (pad, still, arm switch closed)");
   Serial.println(" X = DISARM  (blocks auto-arm across warm reset; power cycle clears)");
-  Serial.println(" T = simulated test fire (Y confirms; GPIO LOW)");
+  Serial.println(" T = 400 ms bench pulse (Y confirms; meter/dummy load only)");
   Serial.println(" D = dump log file to serial");
   Serial.println(" L = list files on card");
   Serial.println(" S = status");
@@ -71,9 +71,9 @@ void handleSerialCommands() {
 
         Serial.println();
         Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-        Serial.println("! HAND TEST: SIMULATED FIRE ONLY        !");
-        Serial.println("! Is the e-match DISCONNECTED?         !");
-        Serial.println("! Press Y within 5 s; gate stays LOW.  !");
+        Serial.println("! HAND TEST: REAL 400 ms GPIO PULSE    !");
+        Serial.println("! E-MATCH / IGNITER MUST BE DISCONNECTED!");
+        Serial.println("! Press Y within 5 s for meter/dummy load!");
         Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
         Serial.println();
       }

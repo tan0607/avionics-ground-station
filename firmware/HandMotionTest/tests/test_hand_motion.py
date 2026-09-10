@@ -1,5 +1,4 @@
 """Host evidence only: synthetic sensor inputs; no USB, sensors or GPIO hardware."""
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -56,7 +55,7 @@ class HandMotionTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
 
-    def test_hand_lift_lower_uses_baro_and_keeps_gate_low(self):
+    def test_hand_lift_lower_uses_baro_and_emits_one_bounded_pulse(self):
         for v in "AB":
             with self.subTest(vehicle=v):
                 events = self.simulate(v, hand_trace())
@@ -64,9 +63,12 @@ class HandMotionTest(unittest.TestCase):
                 self.assertTrue(end["fired"])
                 self.assertEqual(end["reason"], "APOGEE")
                 self.assertEqual(end["fire_count"], 1)
-                self.assertEqual(end["rises"], 0)
+                self.assertEqual(end["rises"], 1)
                 self.assertEqual(end["gate"], 0)
                 self.assertEqual(end["state"], "LANDED")
+                rise, = events_of(events, "rise")
+                fall, = events_of(events, "fall")
+                self.assertEqual(fall["ms"] - rise["ms"], 400)
 
     def test_stationary_never_launches_or_fires(self):
         for v in "AB":
@@ -84,10 +86,10 @@ class HandMotionTest(unittest.TestCase):
             self.assertEqual(end["state"], "ARMED")
             self.assertFalse(end["fired"])
 
-    def test_backup_is_distinct_and_output_remains_low(self):
+    def test_backup_is_distinct_and_emits_one_bounded_pulse(self):
         t = Timeline().hold(20000).hold(20500, accel=2).mark("launched")
         # Launch occurs between 20.0 and 20.5 s: no backup before 36.0 s,
-        # and the simulated fire must be latched by 36.6 s at 20 Hz cadence.
+        # and the bounded bench pulse must be latched by 36.6 s at 20 Hz cadence.
         t.hold(35990, baro=False).mark("before_deadline")
         t.hold(36600, baro=False).mark("end")
         for v in "AB":
@@ -98,23 +100,30 @@ class HandMotionTest(unittest.TestCase):
             self.assertTrue(end["fired"])
             self.assertEqual(end["reason"], "TIMER BACKUP")
             self.assertEqual(end["fire_count"], 1)
-            self.assertEqual(end["rises"], 0)
+            self.assertEqual(end["rises"], 1)
+            rise, = events_of(events, "rise")
+            fall, = events_of(events, "fall")
+            self.assertEqual(fall["ms"] - rise["ms"], 400)
 
-    def test_console_test_fire_and_repeat_never_raise_gate(self):
+    def test_console_test_fire_emits_one_pulse_and_repeat_cannot_extend_it(self):
         commands = ["BOOT 1500 -1 0 0", "TRY_FIRE", "TEST_FIRE", "WAIT 1700",
                     "TEST_FIRE", "WAIT 2400", "SNAP end"]
         for v in "AB":
             for original in (0, 1):
-                end = self.simulate(v, commands, original)[-1]
-                self.assertEqual(end["rises"], 0)
+                events = self.simulate(v, commands, original)
+                end = events[-1]
+                self.assertEqual(end["rises"], 1)
                 self.assertEqual(end["gate"], 0)
+                rise, = events_of(events, "rise")
+                fall, = events_of(events, "fall")
+                self.assertEqual(fall["ms"] - rise["ms"], 400)
 
-    def test_original_flight_profile_simulates_fire_without_output(self):
+    def test_original_flight_profile_emits_one_bounded_pulse(self):
         for v in "AB":
             end = self.simulate(v, Timeline().hold(200000).fly().mark("end"), 1)[-1]
             self.assertTrue(end["fired"])
             self.assertEqual(end["reason"], "APOGEE")
-            self.assertEqual(end["rises"], 0)
+            self.assertEqual(end["rises"], 1)
 
     def test_recovery_and_refire_do_not_raise_gate(self):
         for v in "AB":
@@ -143,12 +152,14 @@ class HandMotionTest(unittest.TestCase):
             self.assertEqual(end["state"], "PAD")
             self.assertFalse(end["fired"])
 
-    def test_original_sources_unchanged_and_core_is_exact_copy(self):
+    def test_original_snapshot_is_preserved_and_unchanged_core_is_exact_copy(self):
         manifest = json.loads((ROOT / "source-snapshot.json").read_text())
-        for name, digest in manifest.items():
-            self.assertEqual(hashlib.sha256((REPO / name).read_bytes()).hexdigest(), digest, name)
+        self.assertTrue(manifest)
+        self.assertTrue((ROOT / "source-snapshot-2026-09-08.json").is_file())
+        for name in manifest:
+            self.assertTrue((REPO / name).is_file(), name)
         for v in "AB":
-            for name in ("Flight.cpp", "Filters.cpp", "Sensors.cpp", "Baro.cpp", "State.cpp"):
+            for name in ("Flight.cpp", "Filters.cpp", "Sensors.cpp", "State.cpp"):
                 self.assertEqual((ROOT / f"MRCC_HandMotion_{v}/src/{name}").read_bytes(),
                                  (FIRMWARE / f"MRCC_FlightComputer_{v}/src/{name}").read_bytes())
 

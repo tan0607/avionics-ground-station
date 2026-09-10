@@ -238,6 +238,7 @@ static const char *NVS_KEY_CH    = "ch";
 #define TLM_FLAG_SD_OK    0x10
 #define TLM_FLAG_BARO_OK  0x20
 #define TLM_FLAG_IMU_OK   0x40
+#define TLM_FLAG_HAND_TEST 0x80
 
 #define TLM_BLOCK_ARM  0x01
 #define TLM_BLOCK_SD   0x02
@@ -356,14 +357,15 @@ static int tlmDecode(const uint8_t *b, int len, char *out, size_t outSize) {
   if (blocks & TLM_BLOCK_SD)  need += TLM_SD_LEN;
   if (len < need) return -1;
 
+  const char *marker = (flags & TLM_FLAG_HAND_TEST) ? "MRCC,HT=1" : "MRCC";
   int n = snprintf(
     out, outSize,
-    "MRCC,PKT=%lu,T=%.1f,ST=%s,AL=%.1f,VZ=%.1f,MX=%.1f,AR=%d,FI=%d,"
+    "%s,PKT=%lu,T=%.1f,ST=%s,AL=%.1f,VZ=%.1f,MX=%.1f,AR=%d,FI=%d,"
     "GD=%d,GF=%d,SAT=%d,"
     "LAT=%.5f,LON=%.5f,GA=%.1f,GS=%.1f,CRS=%.0f,"
     "AX=%.2f,AY=%.2f,AZ=%.2f,GX=%.0f,GY=%.0f,GZ=%.0f,"
     "HDG=%.0f,SD=%d,BA=%d,IM=%d",
-    (unsigned long) pkt, tMs / 1000.0,
+    marker, (unsigned long) pkt, tMs / 1000.0,
     tlmStateName(state), alt, vz, maxAlt,
     (flags & TLM_FLAG_ARMED)    ? 1 : 0,
     (flags & TLM_FLAG_FIRED)    ? 1 : 0,

@@ -1,4 +1,4 @@
-// HAND TEST OVERRIDE: output is always LOW; firing/latches are simulated.
+// HAND TEST BENCH OUTPUT: real 400 ms pulse; multimeter/dummy load only.
 // Original API documentation below describes the production module.
 #pragma once
 #include <Arduino.h>

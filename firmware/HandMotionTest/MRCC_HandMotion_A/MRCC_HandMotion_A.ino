@@ -62,9 +62,9 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
 
-  Serial.println("HAND TEST ONLY - PYRO GPIO PERMANENTLY LOW - NOT FLIGHT FIRMWARE");
+  Serial.println("HAND TEST ONLY - 400 ms BENCH PULSE ENABLED - NOT FLIGHT FIRMWARE");
 #if HAND_TEST_ORIGINAL_THRESHOLDS
-  Serial.println("PROFILE=ORIGINAL_THRESHOLDS; physical output still disabled");
+  Serial.println("PROFILE=ORIGINAL_THRESHOLDS; multimeter/dummy load only");
 #else
   Serial.println("PROFILE=HAND; experimental thresholds, not production validation");
 #endif
@@ -177,9 +177,9 @@ void loop() {
     Serial.print(" BA="); Serial.print(baroOK);
     Serial.print(" IM_AGE_MS="); Serial.print(millis() - lastImuUpdate);
     Serial.print(" BA_AGE_MS="); Serial.print(millis() - lastBaroUpdate);
-    Serial.print(" WOULD_FIRE="); Serial.print(pyroFired);
+    Serial.print(" PULSE_LATCH="); Serial.print(pyroFired);
     Serial.print(" REASON="); Serial.print(lastFireReason);
-    Serial.println(" GPIO=LOW(commanded)");
+    Serial.print(" GPIO="); Serial.println(pyroFiring ? "HIGH(commanded)" : "LOW(commanded)");
   }
 
   handleSerialCommands();

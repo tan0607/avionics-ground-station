@@ -1,7 +1,7 @@
 #pragma once
 
-// BENCH ONLY: both profiles permanently inhibit the pyro output.
-// 0 = hand-scale thresholds, 1 = original flight thresholds.
+// BENCH ONLY: 0 = hand-scale thresholds, 1 = production flight thresholds.
+// Both profiles emit a real timer-bounded pulse for multimeter/dummy-load use.
 #ifndef HAND_TEST_ORIGINAL_THRESHOLDS
 #define HAND_TEST_ORIGINAL_THRESHOLDS 0
 #endif
@@ -55,15 +55,20 @@ const float GRAVITY = 9.80665;
 //   the two transmitters collide on air, so neither
 //   link survives.
 //
-// The second one is the killer here. One telemetry
-// cycle is two copies of a ~231 byte packet at SF7 /
-// BW250 / CR4-5: ~182 ms of air each, plus the 60 ms
-// COPY_GAP, inside a 500 ms SEND_INTERVAL. So ONE
-// rocket already radiates ~73% of the time and its TX
-// sequence occupies ~85% of every window - check the
-// `air=` figure [TX] prints against that 182. There is
-// no room for a second airframe on this channel, and
-// no setting short of a different frequency makes room.
+// The second one is the killer here, and the move to a
+// 10 Hz binary downlink did not soften it. One telemetry
+// cycle is now a single 52-67 byte packet at SF7 / BW250
+// / CR4-5: ~48-60 ms of air inside a 100 ms
+// SEND_INTERVAL. So ONE rocket radiates ~60% of the time
+// - check the `air=` figure [TX] prints against that 60.
+//
+// That is DOWN from the ~73% the old two-copy ASCII
+// packet cost, and it still leaves no room for a second
+// airframe: 60% duty means a second transmitter on the
+// same channel collides with this one on well over half
+// its packets, and neither link survives that. Freeing
+// 40% of the air did not create a second channel. Only a
+// different frequency does.
 //
 // Both channels sit inside Malaysia's 433 MHz ISM
 // allocation (MCMC: 433.05 - 434.79 MHz) and are
@@ -149,14 +154,45 @@ const float GRAVITY = 9.80665;
 // TIMING
 // -----------------------------------------------------
 
-const unsigned long SEND_INTERVAL   = 500;   // telemetry packet
+// SEND_INTERVAL is 100 ms - 10 Hz - and that number is not free. It is the
+// air time of ONE binary packet plus margin, and it only became reachable when
+// the downlink stopped being ASCII.
+//
+// The arithmetic, at the SF7 / BW250 / CR4-5 this link has always used:
+//
+//   ASCII, 185-237 bytes   149-187 ms of air   ONE copy overruns a 100 ms window
+//   binary, 52-67 bytes     48- 60 ms of air   60% duty at 10 Hz, single copy
+//
+// So the old packet could not be sent at 10 Hz at any setting. It was not a
+// tuning problem - one copy of it is longer than the whole window, and the TX
+// state machine below would simply have run late forever, reporting 10 Hz in
+// this constant while putting 5-6 Hz on the air. The packet had to shrink
+// first; see the WIRE FORMAT block further down.
+//
+// TX_COPIES is 1 now and cannot be 2 (see TX_COPIES_DEFAULT). The redundancy
+// that the second copy used to buy is bought by the rate instead: a packet lost
+// at 10 Hz costs 100 ms of timeline, where a packet lost at 2 Hz cost 500 ms.
+const unsigned long SEND_INTERVAL   = 100;   // telemetry packet, 10 Hz
 const unsigned long LOG_INTERVAL    = 100;   // SD log, 10 Hz
 const unsigned long FLUSH_INTERVAL  = 1000;  // force to card
 const unsigned long STATUS_INTERVAL = 5000;  // status line
 const unsigned long HEALTH_INTERVAL = 5000;  // recovery attempts
 
 const unsigned long COPY_GAP    = 60;    // between the two copies
-const unsigned long TX_MAX_AIR  = 300;   // fallback if DIO0 never fires
+
+// Fallback if DIO0 never fires. It has to sit ABOVE the worst-case air time and
+// BELOW the send interval, and at 10 Hz those two bounds are 60 ms apart rather
+// than 240. 90 ms is 1.5x the 60 ms worst case and still inside the window, so
+// a missed TxDone costs one packet instead of wedging the state machine into
+// the next one. It was 300 ms, which at this rate would swallow three windows.
+const unsigned long TX_MAX_AIR  = 90;
+
+// The [TX] line, one packet in this many. At 2 Hz a line per packet was two
+// lines a second and readable; at 10 Hz it is ten, which buries every other
+// message on the console - including the ones that matter. 10 packets is one
+// line a second, and the packet is still on the air at full rate either way.
+const unsigned long TX_REPORT_EVERY = 10;
+
 const unsigned long IMU_STALE   = 2000;  // no IMU data for this long = down
 const unsigned long GPS_STALE   = 2000;  // no NMEA for this long = down
 
@@ -167,33 +203,171 @@ const unsigned long GPS_START_TIMEOUT = 5000;
 // RADIO DEFAULTS (adjustable live with + - and C)
 // -----------------------------------------------------
 
+// 17 dBm - the flight value, and the one this link is characterised at.
+//
+// KNOWN, AND WATCH FOR IT: running 17 dBm at this rate put the BMP280 back into
+// its documented A1R failure - a steady ~4000 m, which is the part's power-on
+// register value read back after it loses its configuration. That fault had
+// been fixed on the supply side and had not been seen since; it returned when
+// the radio's load changed, and nothing else changed with it.
+//
+// What changed is not the duty cycle so much as the RECOVERY. The old link was
+// two 182 ms bursts per 500 ms: 73% duty, but ~313 ms of quiet between
+// keyings. This one is a packet every 100 ms: ~60% duty with ~40 ms of quiet.
+// Lower average current, far less time for a supply path with resistance in it
+// to come back up. Baro.cpp calls that path a board fault in as many words.
+//
+// So on every bench run at this setting, check three things before trusting a
+// flight: AL not sitting at ~4000, brownoutCount not climbing, and no
+// unexplained reset. `-` on the console drops the power live if you need to
+// separate an electrical fault from a software one - if the symptom follows the
+// power, the fix is decoupling at the module (bulk >=100 uF plus 100 nF at
+// VCC), not a lower setting.
 #define TX_POWER_DEFAULT  17
-#define TX_COPIES_DEFAULT 2
 
-// LoRa's hard payload limit. txPacket is one byte larger, for snprintf's NUL.
-// Nothing enforces this on the way out - an over-long packet is truncated at
-// the buffer and the transmitter reports the truncated length - so it is the
-// number every optional field has to be measured against before it is added.
+// ONE COPY, AND IT CANNOT BE TWO. A second copy needs COPY_GAP + another full
+// air time - 60 + 60 ms on top of the first 60 - which does not fit in a 100 ms
+// SEND_INTERVAL. Setting this to 2 does not break the state machine (it starts
+// a cycle only when idle, so it self-limits) but it silently halves the rate
+// to ~6 Hz. The redundancy is bought by the rate now, not by repetition.
+#define TX_COPIES_DEFAULT 1
+
+// LoRa's hard payload limit. The binary packet is nowhere near it - 67 bytes
+// worst case against 255 - but every optional block is still measured against
+// this before it is appended, because the failure mode has not changed: a block
+// written past the end of the buffer is not rejected by anything downstream,
+// it just corrupts whatever the encoder writes next.
 const int TX_PAYLOAD_MAX = 255;
+
+
+// -----------------------------------------------------
+// WIRE FORMAT - the binary telemetry packet
+//
+// THIS BLOCK IS DUPLICATED IN MRCC_GroundStation.ino.
+// Arduino builds each sketch on its own, so there is no
+// header to share; the frequencies above have the same
+// problem and the same rule. CHANGE ONE, CHANGE THE
+// OTHER, AND BUMP TLM_VERSION.
+//
+// Why binary at all: the ASCII key=value packet this
+// replaced cost 185-237 bytes, which is 149-187 ms of
+// air, which does not fit in a 100 ms window at any
+// power or coding rate. `LAT=%.5f` spent 13 bytes on a
+// number that is exact in 4. The fields below are the
+// same fields - nothing was dropped to make 10 Hz fit,
+// only re-encoded.
+//
+// THE ASCII FORMAT IS NOT GONE. The ground station
+// decodes this and prints the identical
+// `MRCC,PKT=...` line it always printed, so
+// shared/protocol/mrcc.py, the loss tracker, the CSV
+// and the dashboard are untouched by this change. The
+// binary exists only between the two radios.
+//
+// All multi-byte fields are LITTLE-ENDIAN. Both ends
+// are ESP32s, but the encoder writes byte-by-byte
+// rather than memcpy-ing a struct, so the format does
+// not silently depend on that.
+//
+//   off  type  field        note
+//     0  u8    magic        TLM_MAGIC
+//     1  u8    version      TLM_VERSION
+//     2  u32   pkt          packetNumber
+//     6  u32   t_ms         millis()
+//    10  u8    state        FS_* index
+//    11  u8    flags        see TLM_FLAG_*
+//    12  u8    sat
+//    13  u8    blocks       which optional blocks follow
+//    14  f32   altFiltered  m AGL
+//    18  f32   maxAlt       m AGL
+//    22  i16   vertVel      x10, m/s
+//    24  i32   latitude     x1e5, deg
+//    28  i32   longitude    x1e5, deg
+//    32  i16   gpsAltitude  x10, m
+//    34  i16   gpsSpeed     x10, m/s
+//    36  u16   gpsCourse    whole deg
+//    38  i16   ax           x100, m/s2
+//    40  i16   ay           x100
+//    42  i16   az           x100
+//    44  i16   gx           whole deg/s
+//    46  i16   gy
+//    48  i16   gz
+//    50  u16   heading      whole deg
+//    52  = TLM_BASE_LEN
+//
+//   then, if TLM_BLOCK_ARM:   u8 wait, u16 delay_s, u16 still_s
+//   then, if TLM_BLOCK_SD:    i16 fileIndex, u32 lines, u32 errors
+//
+// ALTITUDE IS f32, NOT A SCALED INTEGER, and that is
+// deliberate. Every other field here has a provable
+// range - 33 g of accel, 2000 deg/s of gyro, 360
+// degrees of heading - so a scaled i16 cannot overflow
+// on a flight this airframe can have. Altitude has no
+// such bound: an i16 in decimetres tops out at 3276.7 m,
+// which is a ceiling written into the wire format where
+// nobody would look for it, and the failure is a
+// wrapped sign - an apogee that reports as a hole in
+// the ground. The two fields it costs 4 extra bytes
+// each are the two the whole vehicle exists to measure.
+//
+// NaN travels: the f32 fields carry it natively, and
+// the scaled integers reserve their most negative value
+// (TLM_NAN_I16 / TLM_NAN_I32) for it. The old ASCII
+// packet printed `nan` and the ground station still
+// does, so a dead sensor reads as dead rather than as
+// a plausible zero.
+// -----------------------------------------------------
+
+#define TLM_MAGIC    0xA5
+#define TLM_VERSION  1
+
+const int TLM_BASE_LEN = 52;
+const int TLM_ARM_LEN  = 5;
+const int TLM_SD_LEN   = 10;
+
+// flags byte
+#define TLM_FLAG_ARMED    0x01   // AR
+#define TLM_FLAG_FIRED    0x02   // FI
+#define TLM_FLAG_GPS_DATA 0x04   // GD
+#define TLM_FLAG_GPS_FIX  0x08   // GF
+#define TLM_FLAG_SD_OK    0x10   // SD
+#define TLM_FLAG_BARO_OK  0x20   // BA
+#define TLM_FLAG_IMU_OK   0x40   // IM
+#define TLM_FLAG_HAND_TEST 0x80  // HT; set only by isolated HandMotionTest
+
+// blocks byte
+#define TLM_BLOCK_ARM  0x01
+#define TLM_BLOCK_SD   0x02
+
+// Reserved sentinels for a non-finite value.
+#define TLM_NAN_I16  ((int16_t) -32768)
+#define TLM_NAN_I32  ((int32_t) -2147483647 - 1)
+#define TLM_NAN_U16  ((uint16_t) 0xFFFF)
 
 // ---- recorder block cadence ----
 //
 // The vehicle prints its recording state to USB every STATUS_INTERVAL; SDF/SDL/
 // SDE put the same state on the air, for the operator who is 19 km away with no
-// cable. They ride ONE PACKET IN TEN rather than every packet, which at
-// SEND_INTERVAL is that same 5 s.
+// cable. This is the cadence in PACKETS, and it exists to hold that block to
+// the 5 s STATUS_INTERVAL the console prints on - so it has to move with
+// SEND_INTERVAL, which is the trap the number below is guarding against.
 //
-// Not every packet, for two reasons that are both hard limits rather than
-// preferences. Bytes: the flight fields alone measure 189-204 on the logs in
-// flights/, against 255. Air: two copies plus COPY_GAP already fill ~87% of the
-// 500 ms window, and the ~25 bytes this block costs is ~40 ms across both
-// copies - affordable once per ten windows, not ten times out of ten.
+// It was 10 packets, which WAS 5 s at the old 2 Hz. At 10 Hz the same 10 would
+// be one second, and the constant would still have read like a deliberate
+// choice while quietly sending the block five times more often than the thing
+// it mirrors. 50 packets at 100 ms is the same 5 s it always meant.
+//
+// The old reason for the cadence - byte budget - is largely gone: the block is
+// 10 bytes against 255, where in ASCII it was ~25 bytes against a packet
+// already at 237. What remains is that it is still 10 bytes of air on a link
+// running at 60% duty, and that reporting a line count faster than the console
+// that produces it buys nothing.
 //
 // A block that does not fit is dropped, never truncated (see
 // buildTelemetryPacket), so this cadence is a floor on freshness, not a
 // guarantee: a packet that arrives late or not at all just delays the next
 // report by 5 s.
-const unsigned long SD_BLOCK_EVERY = 10;   // packets
+const unsigned long SD_BLOCK_EVERY = 50;   // packets = 5 s at SEND_INTERVAL
 
 
 // -----------------------------------------------------
@@ -351,9 +525,9 @@ const float         PAD_ACCEL_TOL  = 0.5;    // m/s2 away from 9.81
 const float         PAD_GYRO_TOL   = 5.0;    // deg/s
 const unsigned long PAD_STILL_TIME = 10000;  // must be still this long
 #if HAND_TEST_ORIGINAL_THRESHOLDS
-const unsigned long AUTO_ARM_DELAY = 180000; // initial session wait; valid warm resets retain progress
+const unsigned long AUTO_ARM_DELAY = 180000; // production threshold profile
 #else
-const unsigned long AUTO_ARM_DELAY = 15000; // hand test only, stillness/calibration still required
+const unsigned long AUTO_ARM_DELAY = 15000;  // hand test only
 #endif
 // PAD/calibration only: a missing 250 ms run breaks observed stillness.
 // Flight launch freshness and thresholds remain unchanged.
@@ -389,13 +563,10 @@ const unsigned long AUTO_ARM_STUCK_AFTER = 30000;
 // single axis cannot be trusted.
 #if HAND_TEST_ORIGINAL_THRESHOLDS
 const float    LAUNCH_ACCEL   = 3.0 * GRAVITY;  // m/s2
+const uint8_t  LAUNCH_CONFIRM = 5;              // consecutive samples
 #else
-const float LAUNCH_ACCEL = 1.25 * GRAVITY; // hand test only
-#endif
-#if HAND_TEST_ORIGINAL_THRESHOLDS
-const uint8_t  LAUNCH_CONFIRM = 5;           // consecutive samples
-#else
-const uint8_t LAUNCH_CONFIRM = 2; // hand test only
+const float    LAUNCH_ACCEL   = 1.25 * GRAVITY; // hand test only
+const uint8_t  LAUNCH_CONFIRM = 2;              // hand test only
 #endif
 
 // Fallback if the IMU is down at launch. The baro
@@ -411,13 +582,10 @@ const unsigned long MOTOR_BURN_MAX    = 4000;  // force COAST after this
 const unsigned long MIN_COAST_TIME   = 1500;   // after launch, no fire before this
 #if HAND_TEST_ORIGINAL_THRESHOLDS
 const float         MIN_ALT_GAIN     = 30.0;   // m AGL, no fire below this
-#else
-const float MIN_ALT_GAIN = 0.5; // m, experimental hand test only
-#endif
-#if HAND_TEST_ORIGINAL_THRESHOLDS
 const float         APOGEE_VEL       = -2.0;   // m/s, descending
 #else
-const float APOGEE_VEL = -0.3; // m/s, experimental hand test only
+const float         MIN_ALT_GAIN     = 0.5;    // m, experimental hand test only
+const float         APOGEE_VEL       = -0.3;   // m/s, experimental hand test only
 #endif
 const uint8_t       APOGEE_CONFIRM   = 4;      // consecutive samples
 

@@ -1,4 +1,4 @@
-// BENCH ONLY. Every pyro GPIO write in this module is LOW.
+// BENCH ONLY. Emits the production-length pulse for multimeter/dummy-load tests.
 #include "Pyro.h"
 #include "Config.h"
 #include "State.h"
@@ -73,8 +73,8 @@ static bool preparePulse() {
 }
 
 static bool startPulse() {
-  // HAND TEST: preserve simulated pulse state/timing but NEVER energize GPIO.
-  // Both profiles and the console bench command use this same LOW-only path.
+  // Gate remains LOW unless the independent cutoff timer starts successfully.
+  // Both the automatic hand path and console bench command share this pulse.
   portENTER_CRITICAL(&pulseMux);
   pulseCutoffDone = false;
   const bool started = gptimer_start(pulseTimer) == ESP_OK;
@@ -82,7 +82,7 @@ static bool startPulse() {
     pulseTimerRunning = true;
     pyroFiring = true;
     fireStartTime = millis();
-    digitalWrite(PYRO_GATE_PIN, LOW); // HAND TEST: output permanently inhibited
+    digitalWrite(PYRO_GATE_PIN, HIGH);
   }
   portEXIT_CRITICAL(&pulseMux);
   return started;
@@ -281,7 +281,7 @@ bool firePyro(const char* reason) {
 
   Serial.println();
   Serial.println("########################################");
-  Serial.print  ("# WOULD FIRE (GPIO LOW) t=");
+  Serial.print  ("# BENCH PULSE (GPIO HIGH) t=");
   Serial.print(millis() / 1000.0, 2);
   Serial.print  ("s  reason=");
   Serial.println(reason);
@@ -305,6 +305,11 @@ bool testFirePyro() {
     return false;
   }
 
+  if (pyroFired) {
+    Serial.println("[HAND TEST PYRO] TEST REFUSED - fired latch is set; cold power cycle required");
+    return false;
+  }
+
   if (!preparePulse() || !startPulse()) {
     Serial.println("[HAND TEST PYRO] TEST REFUSED - pulse timer unavailable or output active");
     return false;
@@ -312,7 +317,7 @@ bool testFirePyro() {
 
   Serial.print("[HAND TEST PYRO] TEST PULSE ");
   Serial.print(FIRE_DURATION);
-  Serial.println(" ms SIMULATED - gate LOW");
+  Serial.println(" ms - gate HIGH; multimeter/dummy load only");
 
   return true;
 }

@@ -6,7 +6,11 @@ The results and `tested-source-sha256.json` below describe their historical
 revision, not the new SD checkpoint code. The pre-checkpoint active production
 baseline is preserved in `source-snapshot-2026-09-09-pre-sd-checkpoint.json`.
 
-Status: source and build verification complete; **not uploaded and not bench-tested**.
+The section below is the historical 2026-09-08 LOW-only validation. See the
+2026-09-10 update at the end for the current binary/pulse behavior.
+
+Status at this historical revision: source and build verification complete;
+**not uploaded and not bench-tested**.
 
 - `python3 -m unittest discover -s firmware/HandMotionTest/tests -p 'test_*.py' -v`: **13 tests passed** (9.767 s).
 - Before implementation, motion/output tests failed as intended: original copies stayed PAD during hand-scale inputs and generated a HIGH edge on the bench/fire paths. Packet marker tests also failed before adding `HT=1`.
@@ -28,3 +32,35 @@ Still required: identify A/B and correct USB interface, confirm disconnected ene
 ## 2026-09-09 timer-only update
 
 Backup changed from 19 s to 16 s in both isolated sketches and both formal sketches. HandMotionTest 13/13 checks and both isolated Arduino builds passed again. The original snapshot is preserved as `source-snapshot-2026-09-08.json`; current baseline and tested-source hashes were refreshed for the explicitly changed files. Full evidence: [16 s backup validation](../../docs/validation/2026-09-09-backup-timeout-16s.md). No upload or device test was performed in this update.
+
+## 2026-09-10 binary telemetry and measurable bench pulse
+
+Current behavior:
+
+- HandMotionTest A/B now use the production 10 Hz, single-copy binary encoder.
+- The reserved `TLM_FLAG_HAND_TEST` bit is always set by the isolated encoder.
+  The updated receiver expands it to `MRCC,HT=1,...,AIR=...`; the backend and
+  dashboard continue to consume the established text contract.
+- Automatic APOGEE, 16 s TIMER BACKUP, and confirmed `T` then `Y` bench test
+  issue a real 400 ms HIGH command on the pyro gate. The independent GPTimer
+  still performs the LOW cutoff. A retained automatic-fired latch refuses any
+  further automatic or manual bench pulse until a complete power cycle.
+- This is only for a multimeter or non-energetic dummy load. It must never be
+  tested with an e-match, igniter, or energetic material connected.
+
+Verification:
+
+- HandMotionTest: **14/14 passed**, including binary round-trip, `HT=1`, exact
+  400 ms HIGH-to-LOW edges, timer backup, stationary/no-fire, and reset/no-refire.
+- Production firmware: **133 passed with 2 registered expected failures** for
+  the unresolved reset-interrupted-pulse cases.
+- Backend: **48/48 passed**. Dashboard: **27/27 passed**, lint passed with four
+  existing Fast Refresh warnings, and production build passed.
+- Arduino-ESP32 3.3.11 builds passed: Hand A 454410 bytes / 26192 RAM; Hand B
+  454414 / 26192; production A 453858 / 26192; production B 453862 / 26192;
+  classic ESP32 ground receiver 293272 / 23388.
+- `git diff --check` passed. `tested-source-sha256.json` was refreshed.
+
+No firmware was uploaded and no serial port, voltage, current, sensor, RF, or
+physical output was tested. A compiled HIGH edge is not measured terminal
+voltage; that evidence must come from the multimeter/dummy-load bench run.

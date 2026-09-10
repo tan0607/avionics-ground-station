@@ -21,6 +21,7 @@ class HandPacketTest(harness.ArmingDownlinkTest):
     def test_actual_pad_packet_transports_countdown_and_records_it(self):
         for v, line, sample in self.packets(Timeline().hold(5000).mark("end")):
             self.assertIn("MRCC,HT=1,", line)
+            self.assertIn("AIR=57", line)
             frame, = mrcc.MrccParser().feed((line + "\n").encode())
             self.assertEqual(frame.extra["HT"], 1)
             self.assertEqual(frame.extra["AD"], 10)
@@ -30,8 +31,22 @@ class HandPacketTest(harness.ArmingDownlinkTest):
     def test_armed_packet_uses_real_state_and_flag_not_a_zero_countdown(self):
         for v, line, sample in self.packets(Timeline().hold(20000).mark("end")):
             self.assertIn("MRCC,HT=1,", line)
+            self.assertIn("AIR=52", line)
             self.assertIn("ST=ARMED", line)
             self.assertIn("AR=1,FI=0", line)
+
+    def test_hand_radio_uses_current_10_hz_single_copy_binary_transport(self):
+        for v in "AB":
+            src = ROOT / f"firmware/HandMotionTest/MRCC_HandMotion_{v}/src"
+            config = (src / "Config.h").read_text()
+            radio = (src / "Radio.cpp").read_text()
+            self.assertIn("SEND_INTERVAL   = 100", config)
+            self.assertIn("TX_COPIES_DEFAULT 1", config)
+            self.assertIn("TLM_FLAG_HAND_TEST", config)
+            self.assertIn("uint8_t txPacket[256]", radio)
+            self.assertIn("flags |= TLM_FLAG_HAND_TEST", radio)
+            self.assertIn("LoRa.write(txPacket, (size_t) txPacketLen)", radio)
+            self.assertNotIn("LoRa.print(txPacket)", radio)
 
 if __name__ == "__main__":
     unittest.main()

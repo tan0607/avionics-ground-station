@@ -324,10 +324,7 @@ const int TLM_SD_LEN   = 10;
 #define TLM_FLAG_SD_OK    0x10   // SD
 #define TLM_FLAG_BARO_OK  0x20   // BA
 #define TLM_FLAG_IMU_OK   0x40   // IM
-// 0x80 is spare. txFiltered is the obvious candidate - the console's R key
-// swaps the six IMU fields between raw and filtered and nothing on the ground
-// says which arrived - but that needs a key on the emitted line to be worth
-// anything, so it is a decision, not a leftover bit. Left unset.
+#define TLM_FLAG_HAND_TEST 0x80  // HT; reserved, production encoder leaves unset
 
 // blocks byte
 #define TLM_BLOCK_ARM  0x01

@@ -8,6 +8,8 @@
 #include "Storage.h"   // the recorder block: file index, lines, write errors
 #include <SPI.h>
 #include <LoRa.h>
+#include <math.h>
+#include <string.h>
 
 int  txPower    = TX_POWER_DEFAULT;
 int  txCopies   = TX_COPIES_DEFAULT;
@@ -18,14 +20,18 @@ unsigned long txBusyCount     = 0;
 unsigned long txTimeoutCount  = 0;
 unsigned long txFallbackCount = 0;
 
-// 255 is LoRa's hard payload limit; +1 for snprintf's NUL. Sized to the limit
-// rather than to the measured packet because the failure mode is silent: an
-// over-long packet is truncated at the buffer, the transmitter reports the
-// truncated length, and the ground station sees a well-formed frame that
-// simply stops early. The tail is the health block, so the fields that vanish
-// first are exactly the ones that say something is wrong.
-char txPacket[256];
-int  txPacketLen = 0;
+// 255 is LoRa's hard payload limit. The binary packet is 52-67 bytes, so this
+// is nowhere near full - it stays sized to the limit because the buffer is what
+// every optional block is bounds-checked against, and a buffer sized to the
+// measured packet would have to be re-checked every time a field is added.
+//
+// BYTES, not a string. There is no NUL terminator and there cannot be one: the
+// payload is binary and 0x00 is a legal value in the middle of it. Anything
+// that treats this as a C string reads a truncated packet - which is why the
+// transmit path below uses LoRa.write() with an explicit length and the console
+// dumps hex rather than printing it.
+uint8_t txPacket[256];
+int     txPacketLen = 0;
 
 #define TX_IDLE  0
 #define TX_COPY1 1
@@ -41,6 +47,7 @@ static unsigned long txGapStart  = 0;
 static unsigned long lastSend    = 0;
 
 static void buildTelemetryPacket();
+static int  tlmReportCountdown = 0;
 static bool startLoRaCopy(int copyNumber);
 static void reportPacketSent();
 static bool txComplete();
@@ -117,116 +124,203 @@ void applyTxPower() {
 
 
 // =====================================================
-// PACKET
+// PACKET CODEC
+//
+// The wire format is specified in Config.h. Every offset
+// and scale factor below has its rationale there, not
+// here - this is the encoder for it.
+//
+// The region between the CODEC markers is compiled
+// VERBATIM by firmware/tests/test_downlink_codec.py,
+// alongside the decoder lifted out of the ground station
+// sketch, so the round trip is tested against the real
+// code on both sides rather than against a Python model
+// of it. Keep the markers.
 // =====================================================
 
-static void buildTelemetryPacket() {
-  // Flight fields go FIRST. If the packet is ever
-  // truncated by a marginal link, the state, altitude
-  // and whether the charge has gone are the fields you
-  // cannot afford to lose.
-  //
-  // Gyro dropped to whole deg/s to buy back the bytes,
-  // and VX/VY dropped entirely - they are computed FROM
-  // GS and CRS, which are already in this packet, so on
-  // the air they were pure redundancy. The card still
-  // logs both at full precision.
-  //
-  // Typical packet is ~185 bytes; 231 was the worst
-  // measured, 237 since IM was added. Feeding every field
-  // its format-width maximum at once gives 252 - not a
-  // flight this rocket will have (it needs a 68-year
-  // packet count AND a 32 km altitude AND 16 g at the same
-  // instant) but it is above the old 250-byte buffer, so
-  // the buffer is now 256. With VX/VY still in, the same
-  // arithmetic gave 258 and the tail really would have
-  // gone.
-  //
-  // SD / BA / IM are the subsystem health bits. IM is here
-  // because the ground station had no way to see the IMU
-  // at all: it was guessing from AX/AY/AZ being non-zero,
-  // and a dead IMU used to downlink its last good sample
-  // forever, so the guess read OK through the failure.
-  // There is deliberately no LORA bit - serviceTelemetry()
-  // returns early when the radio is down, so the field
-  // could only ever be 1 in a packet that arrived. Silence
-  // is the honest signal there, and the ground station
-  // already reads it.
-  snprintf(
-    txPacket, sizeof(txPacket),
-    "MRCC,HT=1,PKT=%lu,T=%.1f,ST=%s,AL=%.1f,VZ=%.1f,MX=%.1f,AR=%d,FI=%d,"
-    "GD=%d,GF=%d,SAT=%d,"
-    "LAT=%.5f,LON=%.5f,GA=%.1f,GS=%.1f,CRS=%.0f,"
-    "AX=%.2f,AY=%.2f,AZ=%.2f,GX=%.0f,GY=%.0f,GZ=%.0f,"
-    "HDG=%.0f,SD=%d,BA=%d,IM=%d",
-    packetNumber, millis() / 1000.0,
-    stateName(flightState), altFiltered, vertVel, maxAlt,
-    pyroArmed ? 1 : 0, pyroFired ? 1 : 0,
-    gpsData ? 1 : 0, gpsFix ? 1 : 0, satellites,
-    latitude, longitude, gpsAltitude, gpsSpeed, gpsCourse,
-    // R on the console swaps these six between raw and
-    // filtered. Same field names, same packet length -
-    // the card is still logging both either way.
-    txFiltered ? fax : ax, txFiltered ? fay : ay, txFiltered ? faz : az,
-    txFiltered ? fgx : gx, txFiltered ? fgy : gy, txFiltered ? fgz : gz,
-    txFiltered ? headingFilt : heading,
-    sdOK ? 1 : 0, baroOK ? 1 : 0, imuOK ? 1 : 0
-  );
+// ---- TLM CODEC BEGIN ----
 
-  // Prelaunch readiness, computed by the same gates that decide arming.
+// Little-endian, byte at a time. Both ends are ESP32s and both are
+// little-endian, so a memcpy of a packed struct would work today - and would
+// make the wire format depend on a property of the compiler that nothing
+// states, checks or would notice changing.
+static inline void tlmPutU8(uint8_t *b, int &i, uint8_t v) {
+  b[i++] = v;
+}
+static inline void tlmPutU16(uint8_t *b, int &i, uint16_t v) {
+  b[i++] = (uint8_t)(v & 0xFF);
+  b[i++] = (uint8_t)((v >> 8) & 0xFF);
+}
+static inline void tlmPutU32(uint8_t *b, int &i, uint32_t v) {
+  for (int k = 0; k < 4; k++) b[i++] = (uint8_t)((v >> (8 * k)) & 0xFF);
+}
+static inline void tlmPutI16(uint8_t *b, int &i, int16_t v) {
+  tlmPutU16(b, i, (uint16_t) v);
+}
+static inline void tlmPutI32(uint8_t *b, int &i, int32_t v) {
+  tlmPutU32(b, i, (uint32_t) v);
+}
+static inline void tlmPutF32(uint8_t *b, int &i, float v) {
+  uint32_t bits;
+  memcpy(&bits, &v, 4);          // the only portable float -> bits move
+  tlmPutU32(b, i, bits);
+}
+
+// Scaled integer fields. Two things have to be true of every one of these and
+// neither is automatic:
+//
+//   A non-finite input must not be cast. (int16_t) NAN is undefined behaviour,
+//   and what it produces in practice is a number - so a dead sensor would
+//   arrive as a plausible reading instead of as nan. The sentinel is what keeps
+//   `nan` on the ground station's line, which is what the ASCII packet did.
+//
+//   A finite input out of range must SATURATE, not wrap. An accelerometer
+//   glitch at 400 m/s2 wrapping through int16 is a large NEGATIVE acceleration,
+//   which is a plausible reading pointing the wrong way. Saturation is
+//   obviously pinned; a wrap is not obviously anything.
+static int16_t tlmQ16(float v, float scale) {
+  if (!isfinite(v)) return TLM_NAN_I16;
+  const float s = v * scale;
+  if (s >=  32767.0f) return  32767;
+  if (s <= -32767.0f) return -32767;
+  return (int16_t) lroundf(s);
+}
+
+static int32_t tlmQ32(double v, double scale) {
+  if (!isfinite(v)) return TLM_NAN_I32;
+  const double s = v * scale;
+  if (s >=  2147483647.0) return  2147483647;
+  if (s <= -2147483647.0) return -2147483647;
+  return (int32_t) llround(s);
+}
+
+// Angles, wrapped into 0..359 rather than saturated - a heading is modular, so
+// 361 degrees is 1 degree and clamping it to 359 would be a real error where
+// wrapping is none.
+static uint16_t tlmQDeg(float v) {
+  if (!isfinite(v)) return TLM_NAN_U16;
+  float w = fmodf(v, 360.0f);
+  if (w < 0.0f) w += 360.0f;
+  return (uint16_t)(((uint16_t) lroundf(w)) % 360);
+}
+
+// ---- TLM CODEC END ----
+
+
+static void buildTelemetryPacket() {
+  // Flight fields go FIRST, in the fixed-length base block. The ordering
+  // argument that put them first in the ASCII packet was about truncation, and
+  // truncation is no longer the risk it was - the base block is fixed at
+  // TLM_BASE_LEN and either arrives whole or fails the radio's CRC and never
+  // arrives at all. What survives from that argument is the part that still
+  // holds: the OPTIONAL blocks come last, so a block that does not fit is
+  // dropped without touching a flight field.
+  //
+  // VX/VY are still absent - they are computed FROM gpsSpeed and gpsCourse,
+  // which are both here, so on the air they were always redundancy. The card
+  // still logs them at full precision.
+  //
+  // SD / BA / IM are the subsystem health bits, in the flags byte. There is
+  // deliberately no LORA bit: serviceTelemetry() returns early when the radio
+  // is down, so the field could only ever be 1 in a packet that arrived.
+  // Silence is the honest signal there, and the ground station reads it.
+  int i = 0;
+
+  tlmPutU8 (txPacket, i, TLM_MAGIC);
+  tlmPutU8 (txPacket, i, TLM_VERSION);
+  tlmPutU32(txPacket, i, (uint32_t) packetNumber);
+  tlmPutU32(txPacket, i, (uint32_t) millis());
+  tlmPutU8 (txPacket, i, flightState);
+
+  uint8_t flags = 0;
+  if (pyroArmed) flags |= TLM_FLAG_ARMED;
+  if (pyroFired) flags |= TLM_FLAG_FIRED;
+  if (gpsData)   flags |= TLM_FLAG_GPS_DATA;
+  if (gpsFix)    flags |= TLM_FLAG_GPS_FIX;
+  if (sdOK)      flags |= TLM_FLAG_SD_OK;
+  if (baroOK)    flags |= TLM_FLAG_BARO_OK;
+  if (imuOK)     flags |= TLM_FLAG_IMU_OK;
+  flags |= TLM_FLAG_HAND_TEST;
+  tlmPutU8(txPacket, i, flags);
+
+  tlmPutU8(txPacket, i, (uint8_t)(satellites < 0   ? 0
+                                : satellites > 255 ? 255
+                                : satellites));
+
+  // Which optional blocks follow. Written as a placeholder and patched once
+  // both appends have had their say - the alternative is deciding twice, in
+  // two places, whether a block fits, which is how the two disagree.
+  const int blocksAt = i;
+  tlmPutU8(txPacket, i, 0);
+
+  // f32, not scaled. See the WIRE FORMAT note in Config.h: these two have no
+  // provable ceiling and a wrapped altitude is an apogee reported as a hole in
+  // the ground.
+  tlmPutF32(txPacket, i, altFiltered);
+  tlmPutF32(txPacket, i, maxAlt);
+
+  tlmPutI16(txPacket, i, tlmQ16(vertVel, 10.0f));
+  tlmPutI32(txPacket, i, tlmQ32(latitude,  100000.0));
+  tlmPutI32(txPacket, i, tlmQ32(longitude, 100000.0));
+  tlmPutI16(txPacket, i, tlmQ16(gpsAltitude, 10.0f));
+  tlmPutI16(txPacket, i, tlmQ16(gpsSpeed,    10.0f));
+  tlmPutU16(txPacket, i, tlmQDeg(gpsCourse));
+
+  // R on the console swaps these six between raw and filtered. Same fields,
+  // same length - the card is still logging both either way.
+  tlmPutI16(txPacket, i, tlmQ16(txFiltered ? fax : ax, 100.0f));
+  tlmPutI16(txPacket, i, tlmQ16(txFiltered ? fay : ay, 100.0f));
+  tlmPutI16(txPacket, i, tlmQ16(txFiltered ? faz : az, 100.0f));
+  tlmPutI16(txPacket, i, tlmQ16(txFiltered ? fgx : gx, 1.0f));
+  tlmPutI16(txPacket, i, tlmQ16(txFiltered ? fgy : gy, 1.0f));
+  tlmPutI16(txPacket, i, tlmQ16(txFiltered ? fgz : gz, 1.0f));
+  tlmPutU16(txPacket, i, tlmQDeg(txFiltered ? headingFilt : heading));
+
+  // The base block is a fixed size and Config.h says what it is. If those two
+  // ever disagree the decoder reads every field at the wrong offset and
+  // reports confident nonsense, so make it a build error instead.
+  static_assert(TLM_BASE_LEN == 52, "TLM_BASE_LEN disagrees with the encoder");
+
+  uint8_t blocks = 0;
+
+  // ---- prelaunch readiness, PAD only ----
+  //
   // AW=blocker bits, AD=boot-delay seconds, AS=observed-stillness seconds.
   // Ceil remaining time; AW=0 is NOT an arming acknowledgement (ST/AR are).
-  // All-or-none append preserves flight/health fields at the LoRa byte limit.
-  // Give this block priority over the sparse recorder details while in PAD.
-  if (flightState == FS_PAD) {
+  // All-or-none: appended whole or not at all.
+  if (flightState == FS_PAD && i + TLM_ARM_LEN <= TX_PAYLOAD_MAX) {
     const ArmReadiness ready = armReadiness();
-    char block[40];
-    int n = snprintf(block, sizeof(block), ",AW=%u,AD=%lu,AS=%lu",
-                     (unsigned int) ready.wait,
-                     (ready.delayRemainingMs + 999) / 1000,
-                     (ready.stillRemainingMs + 999) / 1000);
-    size_t used = strlen(txPacket);
-    if (n > 0 && n < (int) sizeof(block) && used + n <= TX_PAYLOAD_MAX) {
-      strcpy(txPacket + used, block);
-    }
+    const unsigned long delaySec = (ready.delayRemainingMs + 999) / 1000;
+    const unsigned long stillSec = (ready.stillRemainingMs + 999) / 1000;
+
+    tlmPutU8 (txPacket, i, ready.wait);
+    tlmPutU16(txPacket, i, (uint16_t)(delaySec > 65535 ? 65535 : delaySec));
+    tlmPutU16(txPacket, i, (uint16_t)(stillSec > 65535 ? 65535 : stillSec));
+    blocks |= TLM_BLOCK_ARM;
   }
 
-  // ---- recorder block, one packet in ten (SD_BLOCK_EVERY) ----
+  // ---- recorder block, one packet in SD_BLOCK_EVERY ----
   //
   // What printStatus's [SD] line says, minus the parts the ground can work out
   // for itself: which file is open (SDF), how many lines are in it (SDL), and
-  // how many writes failed (SDE). The write RATE is not sent -- the ground
+  // how many writes failed (SDE). The write RATE is not sent - the ground
   // station differences SDL between reports exactly as printStatus differences
-  // it for logHz -- and neither is the byte count, which tracks the line count
-  // and is the field worth least per byte on a link with ~20 to spare.
+  // it for logHz.
   //
-  // The SD bit already on every packet says the card is MOUNTED. It does not
-  // say the flight is being recorded: a card that mounts, opens a file and then
-  // stops accepting writes reports SD=1 for the whole flight. A line count that
-  // stops moving is what shows that, and until now it existed only on a serial
-  // port nobody can reach once the rocket is on the pad.
-  //
-  // Built into a scratch buffer and copied only IF IT FITS. Formatting straight
-  // into the tail would let a long packet -- a five-digit altitude over a
-  // full-width GPS fix -- push past the buffer, and what sits at the tail is the
-  // health block. Losing SDL for one tick costs nothing. Losing SD/BA/IM costs
-  // the operator the fields that say something is wrong, in order to report how
-  // many lines got written.
-  if (packetNumber % SD_BLOCK_EVERY == 0) {
-    char block[40];
-    int  n = snprintf(block, sizeof(block), ",SDF=%d,SDL=%lu,SDE=%lu",
-                      logFileIndex, logLineCount, sdErrorCount);
-
-    size_t used = strlen(txPacket);
-
-    // n < sizeof(block) rejects a block snprintf itself had to truncate, which
-    // would otherwise be appended as a half-written field.
-    if (n > 0 && n < (int) sizeof(block) && used + n <= TX_PAYLOAD_MAX) {
-      strcpy(txPacket + used, block);
-    }
+  // The SD bit in the flags byte says the card is MOUNTED. It does not say the
+  // flight is being recorded: a card that mounts, opens a file and then stops
+  // accepting writes reports SD=1 for the whole flight. A line count that stops
+  // moving is what shows that, and without this block it exists only on a
+  // serial port nobody can reach once the rocket is on the pad.
+  if (packetNumber % SD_BLOCK_EVERY == 0 && i + TLM_SD_LEN <= TX_PAYLOAD_MAX) {
+    tlmPutI16(txPacket, i, (int16_t) logFileIndex);
+    tlmPutU32(txPacket, i, (uint32_t) logLineCount);
+    tlmPutU32(txPacket, i, (uint32_t) sdErrorCount);
+    blocks |= TLM_BLOCK_SD;
   }
 
-  txPacketLen = strlen(txPacket);
+  txPacket[blocksAt] = blocks;
+  txPacketLen = i;
 }
 
 
@@ -238,7 +332,10 @@ static bool startLoRaCopy(int copyNumber) {
 
   txDoneFlag = false;
 
-  LoRa.print(txPacket);
+  // write(), not print(). print() would stop at the first 0x00, and a binary
+  // packet is full of them - a zero altitude, a zero gyro rate, the high byte
+  // of almost every small number. The length is explicit for the same reason.
+  LoRa.write(txPacket, (size_t) txPacketLen);
   LoRa.endPacket(true);   // async - returns immediately
 
   txStartTime = millis();
@@ -270,6 +367,14 @@ static bool txComplete() {
 // =====================================================
 
 static void reportPacketSent() {
+  // THROTTLED. At 2 Hz a line per packet was two lines a second; at 10 Hz it is
+  // ten, and a console scrolling that fast is a console nobody reads - which
+  // costs you the [BARO] and [PYRO] lines that actually need looking at. One
+  // line per TX_REPORT_EVERY packets, and `air=` is still measured on every
+  // packet whether or not this prints it.
+  if (--tlmReportCountdown > 0) return;
+  tlmReportCountdown = (int) TX_REPORT_EVERY;
+
   Serial.print("[TX] air=");
   Serial.print(lastAirTime);
   Serial.print("ms pwr=");
@@ -279,9 +384,16 @@ static void reportPacketSent() {
   Serial.print(" len=");
   Serial.print(txPacketLen);
 
+  // Hex, because the packet is bytes now. The readable form of this data is on
+  // the ground station's console, where the decoder puts it back into the
+  // MRCC,PKT=... line - this end has printStatus() for the same numbers, so
+  // what is wanted here is the literal thing that went on the air.
   if (showPacket) {
     Serial.print(" | ");
-    Serial.print(txPacket);
+    for (int k = 0; k < txPacketLen; k++) {
+      if (txPacket[k] < 0x10) Serial.print('0');
+      Serial.print(txPacket[k], HEX);
+    }
   }
 
   Serial.println();
