@@ -70,3 +70,35 @@ export function defaultFlightLabel(
   const mm = String(now.getMinutes()).padStart(2, "0")
   return `${mission}-${hh}${mm}`
 }
+
+
+/**
+ * Peripherals this flight is deliberately going WITHOUT, by SUBSYSTEMS name.
+ *
+ * Not fitted is not failed, and the Peripherals panel already draws that
+ * distinction: PYRO and VBAT sit grey at "—" because PYRO_CONT_ENABLED and
+ * VBAT_ENABLED are 0 in the firmware, and nothing counts them as DOWN. This
+ * list makes the same statement about a peripheral the firmware still compiles
+ * in and still reports a health bit for.
+ *
+ * IT IS A DECLARATION, NOT A DETECTOR, and that is the whole discipline of it.
+ * It must never be derived from the health bit: a row that greys itself out the
+ * moment it goes down is a row that can no longer report going down, which
+ * costs you the one thing the panel exists for. Naming a peripheral here is a
+ * decision made on the ground, before the flight, about what is not on board.
+ *
+ * WHAT IT DOES NOT TOUCH: the vehicle still initialises the card, still sends
+ * the bit, and the backend still records it — `hw_sd` stays 0 on every row of
+ * telemetry.csv. The flight record keeps saying what actually happened; only
+ * the pad display stops calling it a fault it can act on.
+ *
+ * 2026-09-10, A1R: the onboard recorder failed pre-flight. The flight record
+ * for this launch is the 10 Hz downlink into the backend's telemetry.csv.
+ * Remove the entry when the card is replaced.
+ */
+export const UNFITTED_PERIPHERALS: readonly string[] = ["SD"]
+
+/** True when a peripheral is not part of this flight's configuration. */
+export function isUnfitted(name: string): boolean {
+  return UNFITTED_PERIPHERALS.includes(name)
+}

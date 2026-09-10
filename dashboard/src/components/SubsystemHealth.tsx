@@ -13,9 +13,15 @@
  * says the card is mounted; `useOnboardLog` says whether the flight is
  * actually being written to it, which the vehicle used to report only on a USB
  * console nobody can reach once the rocket is closed up.
+ *
+ * A peripheral named in UNFITTED_PERIPHERALS is drawn grey at NOT USED and
+ * takes no part in the DOWN count, because a peripheral the flight is not
+ * carrying is not a fault the operator can act on. That list is a declaration
+ * made before the flight, never inferred from the health bit — see mission.ts.
  */
 import { Health, SUBSYSTEMS, isKnown, type TelemetryFrame } from "@/lib/protocol"
 import { groupThousands } from "@/lib/format"
+import { isUnfitted } from "@/lib/mission"
 import type { OnboardLog } from "@/hooks/useOnboardLog"
 import { Card } from "@/components/ui/card"
 import { StatusLight, type LightState } from "./StatusLight"
@@ -75,9 +81,14 @@ export function SubsystemHealth({
   // Read at render: App republishes on a UI tick, so the age below keeps
   // counting up when the link goes quiet instead of freezing at its last value.
   const ageLabel = stale(onboardLog, Date.now())
+  // A peripheral this flight is not carrying cannot be DOWN. Filtered here
+  // rather than inside rowState so the header count, the "Stale:" consequence
+  // line and the row itself all read from the one decision.
   const down = SUBSYSTEMS.filter(
-    (s) => isKnown(frame, s.mask) && !(frame!.health & s.mask),
+    (s) => !isUnfitted(s.name) && isKnown(frame, s.mask) && !(frame!.health & s.mask),
   )
+  // The recorder footer describes the card, so it goes wherever the row goes.
+  const recorderFlown = !isUnfitted("SD")
 
   return (
     <Card className="shrink-0">
@@ -94,8 +105,9 @@ export function SubsystemHealth({
 
       <div className="divide-y divide-hairline px-4">
         {SUBSYSTEMS.map((s) => {
-          const row =
-            s.mask === Health.SD
+          const row: { state: LightState; detail: string } = isUnfitted(s.name)
+            ? { state: "idle", detail: "NOT USED" }
+            : s.mask === Health.SD
               ? sdRow(frame, onboardLog)
               : { state: rowState(frame, s.mask), detail: rowDetail(frame, s.mask) }
           return <StatusLight key={s.name} label={s.name} state={row.state} detail={row.detail} />
@@ -108,7 +120,7 @@ export function SubsystemHealth({
         appears only once the vehicle has reported — an empty recorder line
         would be indistinguishable from one reading zero.
       */}
-      {onboardLog.reportedAt != null && (
+      {recorderFlown && onboardLog.reportedAt != null && (
         <div className="flex items-baseline justify-between gap-2 border-t border-hairline px-4 py-2">
           <span className="truncate text-[0.625rem] uppercase tracking-[0.12em] text-ink-mute">
             REC {onboardLog.fileName ?? "no file"}
